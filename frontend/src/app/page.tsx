@@ -72,9 +72,11 @@ Lead Backend Developer @ FinTech Velocity (2022 - Present)
 - Redesigned core financial ledger using PostgreSQL, improving complex SQL query response times by 42% through indexing and connection pooling.
 - Containerized entire microservice fleet using Docker and automated deployment workflows to AWS ECS and RDS with AWS S3 storage for compliance records.`,
       `Frontend & Architecture Projects:
-- Spearheaded company-wide frontend redesign using React and TypeScript, implementing responsive component libraries and optimistic UI updates.
-- Integrated Redis caching layers for rate-limiting and session synchronization across distributed worker instances.
-- Mentored 5 junior engineers and instituted TypeScript strict-mode code review guidelines.`
+ResuFit – AI Career Readiness & Requirement Gap Engine | Live: https://frontend-drab-five-38.vercel.app | GitHub: https://github.com/navsharma26/ResuFit
+- Architected an end-to-end AI career readiness engine using Next.js 14, TypeScript, Express, PostgreSQL, Prisma, and Docker.
+- Implemented LLM-powered evidence gap verification and practical skill action plans with ATS scoring alignment.
+- Containerized microservices and configured cloud deployment across Render and Vercel with reverse proxy API routing.
+- Integrated Redis caching layers for rate-limiting and session synchronization across distributed worker instances.`
     ]
   },
   {
