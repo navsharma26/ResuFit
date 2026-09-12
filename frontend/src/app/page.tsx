@@ -13,13 +13,25 @@ import {
   Cpu,
   Layers,
   ArrowRight,
-  Zap
+  Zap,
+  HelpCircle,
+  LayoutDashboard,
+  UploadCloud,
+  CheckCircle2,
+  Sliders,
+  Clock,
+  ShieldCheck,
+  ChevronRight,
+  ExternalLink
 } from 'lucide-react';
 import { GapAnalysisMatrix } from '../components/GapAnalysisMatrix';
 import { GapAnalysisResult } from '../components/types';
 import { CoverLetterGenerator } from '../components/CoverLetterGenerator';
 import { ResumeOptimizationWorkspace } from '../components/ResumeOptimizationWorkspace';
 import { ResumeFileUploader } from '../components/ResumeFileUploader';
+import { MatchScoreCard } from '../components/MatchScoreCard';
+
+type ActiveView = 'all' | 'matrix' | 'optimizer' | 'cover-letter' | 'ingestion';
 
 interface Preset {
   id: string;
@@ -52,7 +64,7 @@ Preferred & Nice-to-Haves:
 - Familiarity with Redis caching and message queues (RabbitMQ / Kafka).
 - Experience setting up automated CI/CD pipelines with GitHub Actions.`,
     resumeChunks: [
-      `Alex Rivera - Staff Software Engineer
+      `Navneet Sharma - Staff Software Engineer
 Summary: Results-oriented Full-Stack Engineer with 6+ years specializing in TypeScript, Node.js, and React architecture. Passionate about performant cloud-native backend systems and intuitive web applications.`,
       `Work Experience:
 Lead Backend Developer @ FinTech Velocity (2022 - Present)
@@ -133,6 +145,7 @@ Tools: Docker, AWS CLI, Linux Administration, Python, Bash, Git`
 ];
 
 export default function Home() {
+  const [activeView, setActiveView] = useState<ActiveView>('all');
   const [selectedPresetId, setSelectedPresetId] = useState<string>(PRESETS[0].id);
   const [jobDescription, setJobDescription] = useState<string>(PRESETS[0].jobDescription);
   const [resumeChunks, setResumeChunks] = useState<string[]>(PRESETS[0].resumeChunks);
@@ -141,11 +154,11 @@ export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<GapAnalysisResult | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
 
-  // Check backend health
+  // Check backend health on mount
   useEffect(() => {
     async function checkHealth() {
       try {
-        const res = await fetch('/api/gap-analysis');
+        const res = await fetch('/api/health');
         if (res.ok) {
           setBackendStatus('online');
         } else {
@@ -234,13 +247,15 @@ export default function Home() {
       const data: GapAnalysisResult = await res.json();
       setAnalysisResult(data);
 
-      // Smooth scroll to results
-      setTimeout(() => {
-        const target = document.getElementById('analysis-results-section');
-        if (target) {
-          target.scrollIntoView({ behavior: 'smooth' });
-        }
-      }, 100);
+      // Smooth scroll to results if on all view
+      if (activeView === 'all') {
+        setTimeout(() => {
+          const target = document.getElementById('analysis-results-section');
+          if (target) {
+            target.scrollIntoView({ behavior: 'smooth' });
+          }
+        }, 100);
+      }
     } catch (err: any) {
       console.error('Gap analysis request failed:', err);
       setError(err.message || 'Failed to analyze requirements. Ensure Express backend is running.');
@@ -256,212 +271,451 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="app-container">
-      {/* Top Header */}
-      <header className="app-header">
-        <div>
-          <div className="brand-badge">
-            <Cpu className="w-3.5 h-3.5" />
-            <span>ResuFit AI Engine • Express + TypeScript + Next.js</span>
+    <div className="app-shell">
+      {/* ====================================================================
+          PERSISTENT OBSIDIAN LEFT SIDEBAR (CoverCraft style)
+          ==================================================================== */}
+      <aside className="app-sidebar">
+        {/* Brand Header */}
+        <div className="sidebar-header">
+          <div className="sidebar-brand-group">
+            <div className="sidebar-brand-icon">
+              <Cpu className="w-5 h-5" />
+            </div>
+            <div className="sidebar-brand-text">
+              <span className="sidebar-brand-title">ResuFit</span>
+              <span className="sidebar-brand-subtitle">AI REQ ENGINE</span>
+            </div>
           </div>
-          <h1 className="main-title">Requirement Gap Analysis Matrix</h1>
-          <p className="main-subtitle">
-            Cross-examine job requirements against candidate resume chunks using OpenAI{' '}
-            <code className="text-blue-400">gpt-4o-mini</code> with structured JSON output. View
-            instant match scoring, mandatory deficits, and evidence verification.
-          </p>
         </div>
 
-        <div className="header-status-badge">
-          <div className={`pulse-dot ${backendStatus === 'offline' ? 'bg-amber-500' : ''}`} />
-          <span>
-            Backend API:{' '}
-            <strong className="text-white">
-              {backendStatus === 'online'
-                ? 'Online (Port 5001)'
-                : backendStatus === 'offline'
-                ? 'Connecting...'
-                : 'Checking...'}
-            </strong>
-          </span>
-        </div>
-      </header>
+        {/* Navigation Section */}
+        <div className="sidebar-section-label">WORKSPACE MODULES</div>
+        <nav className="sidebar-nav">
+          <button
+            onClick={() => setActiveView('all')}
+            className={`sidebar-nav-item ${activeView === 'all' ? 'active' : ''}`}
+            title="Complete End-to-End Command Center"
+          >
+            <LayoutDashboard className="w-4 h-4 nav-icon" />
+            <span>Dashboard</span>
+            <span className="sidebar-badge">ALL</span>
+          </button>
 
-      {/* Preset Scenarios */}
-      <section className="presets-section">
-        <div className="presets-header">
-          <span className="presets-title">
-            <Terminal className="w-4 h-4 text-blue-400" />
-            Select Industry Test Scenario or Customize Below
-          </span>
-          <span className="text-xs text-neutral-400">Click any preset to auto-load</span>
-        </div>
+          <button
+            onClick={() => setActiveView('matrix')}
+            className={`sidebar-nav-item ${activeView === 'matrix' ? 'active' : ''}`}
+            title="Requirement Gap Analysis Matrix"
+          >
+            <Activity className="w-4 h-4 nav-icon" />
+            <span>Gap Analysis</span>
+            {analysisResult && (
+              <span className="sidebar-badge">{analysisResult.match_score}%</span>
+            )}
+          </button>
 
-        <div className="preset-buttons-grid">
-          {PRESETS.map(preset => (
+          <button
+            onClick={() => setActiveView('optimizer')}
+            className={`sidebar-nav-item ${activeView === 'optimizer' ? 'active' : ''}`}
+            title="Live Bullet Optimizer & Score Calibration"
+          >
+            <Zap className="w-4 h-4 nav-icon" />
+            <span>Live Optimizer</span>
+          </button>
+
+          <button
+            onClick={() => setActiveView('cover-letter')}
+            className={`sidebar-nav-item ${activeView === 'cover-letter' ? 'active' : ''}`}
+            title="AI Tailored Cover Letter Studio"
+          >
+            <FileText className="w-4 h-4 nav-icon" />
+            <span>Cover Letter</span>
+          </button>
+
+          <button
+            onClick={() => setActiveView('ingestion')}
+            className={`sidebar-nav-item ${activeView === 'ingestion' ? 'active' : ''}`}
+            title="Resume Upload & Parsing Diagnostics"
+          >
+            <UploadCloud className="w-4 h-4 nav-icon" />
+            <span>Resume Ingestion</span>
+          </button>
+        </nav>
+
+        {/* Sidebar Footer with Profile */}
+        <div className="sidebar-footer">
+          <div className="user-profile-badge">
+            <div className="user-avatar-circle">NS</div>
+            <div className="user-info-text">
+              <span className="user-name">Navneet Sharma</span>
+              <span className="user-plan">PRO CANDIDATE</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* ====================================================================
+          MAIN APP CANVAS (Obsidian Canvas + Modern Header)
+          ==================================================================== */}
+      <div className="app-main">
+        {/* Sticky Top Header Bar */}
+        <header className="top-bar">
+          <div className="top-bar-left">
+            <div className="top-nav-breadcrumb">
+              <span className="crumb-brand">ResuFit Engine</span>
+              <span className="crumb-sep">/</span>
+              <span className="crumb-current">
+                {activeView === 'all' && 'All-in-One Dashboard'}
+                {activeView === 'matrix' && 'Requirement Gap Analysis Matrix'}
+                {activeView === 'optimizer' && 'Live Bullet Optimizer & Score Calibration'}
+                {activeView === 'cover-letter' && 'Tailored Cover Letter Studio'}
+                {activeView === 'ingestion' && 'Resume Ingestion & Parsing Diagnostics'}
+              </span>
+            </div>
+          </div>
+
+          <div className="top-bar-right">
+            {/* Backend Status indicator */}
+            <div className="header-status-badge" style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}>
+              <div className={`pulse-dot ${backendStatus === 'offline' ? 'bg-amber-500' : ''}`} />
+              <span>
+                Backend:{' '}
+                <strong className="text-white">
+                  {backendStatus === 'online'
+                    ? 'Online (Port 5001)'
+                    : backendStatus === 'offline'
+                    ? 'Connecting...'
+                    : 'Checking...'}
+                </strong>
+              </span>
+            </div>
+
+            {/* Signature Crisp Solid White CTA */}
             <button
-              key={preset.id}
-              onClick={() => handleSelectPreset(preset)}
-              className={`preset-btn ${selectedPresetId === preset.id ? 'active' : ''}`}
+              onClick={() => handleRunAnalysis()}
+              disabled={loading}
+              className="btn-covercraft-white"
+              id="top-run-analysis-btn"
             >
-              <div className="preset-btn-icon">
-                <FileCode className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="preset-btn-name">{preset.name}</div>
-                <div className="preset-btn-desc">{preset.role}</div>
-              </div>
+              {loading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 spin-icon" />
+                  <span>Analyzing...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Run Analysis</span>
+                </>
+              )}
             </button>
-          ))}
-        </div>
-      </section>
 
-      {/* Resume File Upload & What to Improve vs Discard Diagnostics */}
-      <ResumeFileUploader onApplyResume={handleApplyUploadedResume} />
-
-      {/* Inputs: Split Layout */}
-      <div className="input-grid">
-        {/* Left: Job Description */}
-        <div className="input-card">
-          <div className="input-card-header">
-            <div className="input-card-title">
-              <FileText className="w-4 h-4 text-blue-400" />
-              <span>Target Job Description</span>
+            {/* Profile Avatar */}
+            <div className="user-avatar-circle" style={{ width: 32, height: 32, fontSize: '0.7rem' }}>
+              NS
             </div>
-            <span className="input-badge">{jobDescription.length} chars</span>
           </div>
-          <textarea
-            className="textarea-field"
-            value={jobDescription}
-            onChange={e => setJobDescription(e.target.value)}
-            placeholder="Paste target job description including mandatory requirements and nice-to-haves..."
-          />
-        </div>
+        </header>
 
-        {/* Right: Resume Chunks */}
-        <div className="input-card">
-          <div className="input-card-header">
-            <div className="input-card-title">
-              <Layers className="w-4 h-4 text-purple-400" />
-              <span>Resume Chunks ({resumeChunks.length})</span>
-            </div>
-            <span className="input-badge">Chunked Ingestion</span>
-          </div>
-
-          <div className="chunks-list">
-            {resumeChunks.map((chunk, idx) => (
-              <div key={idx} className="chunk-card">
-                <div className="chunk-card-header">
-                  <span>Resume Chunk #{idx + 1}</span>
-                  {resumeChunks.length > 1 && (
-                    <button
-                      onClick={() => handleRemoveChunk(idx)}
-                      className="text-neutral-400 hover:text-rose-400 p-0.5"
-                      title="Delete chunk"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-                <textarea
-                  className="chunk-textarea"
-                  value={chunk}
-                  onChange={e => handleUpdateChunk(idx, e.target.value)}
-                  placeholder={`Enter text content for Resume Chunk #${idx + 1}...`}
-                />
-              </div>
-            ))}
-          </div>
-
-          <button onClick={handleAddChunk} className="add-chunk-btn">
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Resume Chunk</span>
+        {/* View Switching Tab Strip */}
+        <div className="view-tabs-strip">
+          <button
+            onClick={() => setActiveView('all')}
+            className={`view-tab-btn ${activeView === 'all' ? 'active' : ''}`}
+          >
+            <LayoutDashboard className="w-3.5 h-3.5" />
+            <span>All-in-One View</span>
+          </button>
+          <button
+            onClick={() => setActiveView('matrix')}
+            className={`view-tab-btn ${activeView === 'matrix' ? 'active' : ''}`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Requirement Gap Matrix</span>
+          </button>
+          <button
+            onClick={() => setActiveView('optimizer')}
+            className={`view-tab-btn ${activeView === 'optimizer' ? 'active' : ''}`}
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span>Interactive Live Optimizer</span>
+          </button>
+          <button
+            onClick={() => setActiveView('cover-letter')}
+            className={`view-tab-btn ${activeView === 'cover-letter' ? 'active' : ''}`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Cover Letter Studio</span>
+          </button>
+          <button
+            onClick={() => setActiveView('ingestion')}
+            className={`view-tab-btn ${activeView === 'ingestion' ? 'active' : ''}`}
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>Resume Ingestion</span>
           </button>
         </div>
-      </div>
 
-      {/* Action Bar */}
-      <div className="action-bar gap-4 flex-wrap">
-        <button
-          onClick={handleRunAnalysis}
-          disabled={loading}
-          className="analyze-btn"
-          id="run-analysis-button"
-        >
-          {loading ? (
-            <>
-              <RefreshCw className="w-5 h-5 spin-icon" />
-              <span>Analyzing Requirements with gpt-4o-mini...</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5" />
-              <span>Run Requirement Gap Analysis</span>
-              <ArrowRight className="w-4 h-4" />
-            </>
-          )}
-        </button>
+        {/* Main Content Area */}
+        <div className="main-content-scroll">
+          {/* ================================================================
+              VIEW: MATRIX OR ALL (Job Description, Chunks, Presets, Results)
+              ================================================================ */}
+          {(activeView === 'all' || activeView === 'matrix') && (
+            <section id="gap-analysis-section" className="mb-10">
+              {/* Presets Scenario Selector */}
+              <div className="macos-window-card">
+                <div className="macos-window-header">
+                  <div className="macos-dots">
+                    <span className="macos-dot red" />
+                    <span className="macos-dot yellow" />
+                    <span className="macos-dot green" />
+                    <span className="macos-tag ml-2">resufit.engine/presets/calibrated-scenarios</span>
+                  </div>
+                  <span className="text-xs text-neutral-400">Select Test Scenario or Customize Below</span>
+                </div>
 
-        <a
-          href="#interactive-resume-workspace"
-          className="generate-cl-shortcut-btn"
-          id="scroll-to-workspace-btn"
-          style={{ background: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.3)', color: '#fcd34d' }}
-        >
-          <Zap className="w-4 h-4 text-amber-400" />
-          <span>Interactive Live Optimizer</span>
-        </a>
+                <div className="p-4 bg-[#11141d]">
+                  <div className="preset-buttons-grid">
+                    {PRESETS.map(preset => (
+                      <button
+                        key={preset.id}
+                        onClick={() => handleSelectPreset(preset)}
+                        className={`preset-btn ${selectedPresetId === preset.id ? 'active' : ''}`}
+                      >
+                        <div className="preset-btn-icon">
+                          <FileCode className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="preset-btn-name">{preset.name}</div>
+                          <div className="preset-btn-desc">{preset.role}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
 
-        <a
-          href="#cover-letter-generator"
-          className="generate-cl-shortcut-btn"
-          id="scroll-to-cover-letter-btn"
-        >
-          <FileText className="w-4 h-4 text-purple-400" />
-          <span>Cover Letter Generator</span>
-        </a>
-      </div>
+              {/* Split Layout: Target Job Description & Chunked Resume */}
+              <div className="input-grid mb-6">
+                {/* Left Card: Target Job Description */}
+                <div className="input-card">
+                  <div className="input-card-header">
+                    <div className="input-card-title">
+                      <FileText className="w-4 h-4 text-blue-400" />
+                      <span>Target Job Description</span>
+                    </div>
+                    <span className="input-badge">{jobDescription.length} chars</span>
+                  </div>
+                  <textarea
+                    className="textarea-field"
+                    value={jobDescription}
+                    onChange={e => setJobDescription(e.target.value)}
+                    placeholder="Paste target job description including mandatory requirements and nice-to-haves..."
+                  />
+                </div>
 
-      {/* Error display */}
-      {error && (
-        <div className="p-4 mb-6 rounded-lg bg-rose-950/40 border border-rose-800 text-rose-300 text-sm">
-          <strong>Analysis Error:</strong> {error}
-        </div>
-      )}
+                {/* Right Card: Resume Chunks */}
+                <div className="input-card">
+                  <div className="input-card-header">
+                    <div className="input-card-title">
+                      <Layers className="w-4 h-4 text-purple-400" />
+                      <span>Resume Chunks ({resumeChunks.length})</span>
+                    </div>
+                    <span className="input-badge">Chunked Ingestion</span>
+                  </div>
 
-      {/* Results Section */}
-      <div id="analysis-results-section">
-        {analysisResult && (
-          <section className="results-container">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <Activity className="w-5 h-5 text-emerald-400" />
-                <span>Analysis Results & Competency Breakdown</span>
-              </h2>
-              {analysisResult.analyzed_at && (
-                <span className="text-xs text-neutral-400">
-                  Last updated: {new Date(analysisResult.analyzed_at).toLocaleTimeString()}
-                </span>
+                  <div className="chunks-list">
+                    {resumeChunks.map((chunk, idx) => (
+                      <div key={idx} className="chunk-card">
+                        <div className="chunk-card-header">
+                          <span>Resume Chunk #{idx + 1}</span>
+                          {resumeChunks.length > 1 && (
+                            <button
+                              onClick={() => handleRemoveChunk(idx)}
+                              className="text-neutral-400 hover:text-rose-400 p-0.5"
+                              title="Delete chunk"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <textarea
+                          className="chunk-textarea"
+                          value={chunk}
+                          onChange={e => handleUpdateChunk(idx, e.target.value)}
+                          placeholder={`Enter text content for Resume Chunk #${idx + 1}...`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <button onClick={handleAddChunk} className="add-chunk-btn">
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Resume Chunk</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Action Bar */}
+              <div className="action-bar gap-4 flex-wrap mb-8">
+                <button
+                  onClick={() => handleRunAnalysis()}
+                  disabled={loading}
+                  className="btn-covercraft-white text-sm px-6 py-3"
+                  id="run-analysis-button"
+                  style={{ fontSize: '0.95rem' }}
+                >
+                  {loading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 spin-icon" />
+                      <span>Analyzing Requirements with gpt-4o-mini...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>Run Requirement Gap Analysis</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => setActiveView('optimizer')}
+                  className="btn-covercraft-secondary text-sm px-4 py-3"
+                >
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  <span>Open Live Optimizer</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveView('cover-letter')}
+                  className="btn-covercraft-secondary text-sm px-4 py-3"
+                >
+                  <FileText className="w-4 h-4 text-purple-400" />
+                  <span>Open Cover Letter Studio</span>
+                </button>
+              </div>
+
+              {/* Error Message */}
+              {error && (
+                <div className="p-4 mb-6 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-sm">
+                  {error}
+                </div>
               )}
-            </div>
 
-            {/* Core Component: Visual Matrix / Checklist directly alongside Match Score */}
-            <GapAnalysisMatrix data={analysisResult} />
-          </section>
-        )}
+              {/* Gap Analysis Results & Score Card */}
+              {analysisResult && (
+                <div id="analysis-results-section" className="space-y-6">
+                  <div className="macos-window-card">
+                    <div className="macos-window-header">
+                      <div className="macos-dots">
+                        <span className="macos-dot red" />
+                        <span className="macos-dot yellow" />
+                        <span className="macos-dot green" />
+                        <span className="macos-tag ml-2">resufit.engine/matches/score-calibration</span>
+                      </div>
+                      <span className="text-xs text-neutral-400">Evaluated with OpenAI gpt-4o-mini</span>
+                    </div>
+                    <div className="p-4 bg-[#11141d]">
+                      <MatchScoreCard data={analysisResult} />
+                    </div>
+                  </div>
+
+                  <div className="macos-window-card">
+                    <div className="macos-window-header">
+                      <div className="macos-dots">
+                        <span className="macos-dot red" />
+                        <span className="macos-dot yellow" />
+                        <span className="macos-dot green" />
+                        <span className="macos-tag ml-2">resufit.engine/matches/gap-matrix</span>
+                      </div>
+                      <span className="text-xs text-neutral-400">Clause Alignment & Evidence Verification</span>
+                    </div>
+                    <div className="p-4 bg-[#11141d]">
+                      <GapAnalysisMatrix data={analysisResult} />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ================================================================
+              VIEW: LIVE OPTIMIZER OR ALL (Workspace, Real-time Scoring, Versioning)
+              ================================================================ */}
+          {(activeView === 'all' || activeView === 'optimizer') && (
+            <section id="interactive-resume-workspace" className="mb-10">
+              <div className="macos-window-card">
+                <div className="macos-window-header">
+                  <div className="macos-dots">
+                    <span className="macos-dot red" />
+                    <span className="macos-dot yellow" />
+                    <span className="macos-dot green" />
+                    <span className="macos-tag ml-2">resufit.engine/workspace/live-optimizer</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="macos-tag">Prisma + PostgreSQL Audit Trail</span>
+                  </div>
+                </div>
+                <div className="p-4 bg-[#11141d]">
+                  <ResumeOptimizationWorkspace
+                    jobDescription={jobDescription}
+                    defaultChunks={resumeChunks}
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* ================================================================
+              VIEW: COVER LETTER STUDIO OR ALL (Multi-Persona Generation)
+              ================================================================ */}
+          {(activeView === 'all' || activeView === 'cover-letter') && (
+            <section id="cover-letter-generator" className="mb-10">
+              <div className="macos-window-card">
+                <div className="macos-window-header">
+                  <div className="macos-dots">
+                    <span className="macos-dot red" />
+                    <span className="macos-dot yellow" />
+                    <span className="macos-dot green" />
+                    <span className="macos-tag ml-2">resufit.engine/cover-letter/studio</span>
+                  </div>
+                  <span className="text-xs text-neutral-400">Role-Tailored Synthesis</span>
+                </div>
+                <div className="p-4 bg-[#11141d]">
+                  <CoverLetterGenerator
+                    jobDescription={jobDescription}
+                    resumeChunks={resumeChunks}
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* ================================================================
+              VIEW: RESUME INGESTION OR ALL (PDF / Docx Upload & Diagnostics)
+              ================================================================ */}
+          {(activeView === 'all' || activeView === 'ingestion') && (
+            <section id="resume-uploader-section" className="mb-10">
+              <div className="macos-window-card">
+                <div className="macos-window-header">
+                  <div className="macos-dots">
+                    <span className="macos-dot red" />
+                    <span className="macos-dot yellow" />
+                    <span className="macos-dot green" />
+                    <span className="macos-tag ml-2">resufit.engine/ingestion/parser-diagnostics</span>
+                  </div>
+                  <span className="text-xs text-neutral-400">PDF & Word Ingestion + Discard vs Improve</span>
+                </div>
+                <div className="p-4 bg-[#11141d]">
+                  <ResumeFileUploader onApplyResume={handleApplyUploadedResume} />
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
       </div>
-
-      {/* Interactive Resume Optimization Workspace: Live Split-Screen Editor & Real-Time Scorecard */}
-      <ResumeOptimizationWorkspace
-        jobDescription={jobDescription}
-        defaultChunks={resumeChunks}
-      />
-
-      {/* Cover Letter Generation Section with Tone / Persona Selector */}
-      <CoverLetterGenerator
-        jobDescription={jobDescription}
-        resumeChunks={resumeChunks}
-      />
-    </main>
+    </div>
   );
 }

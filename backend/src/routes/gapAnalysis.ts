@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { GapAnalysisService } from '../services/gapAnalysisService.js';
-import { GapAnalysisRequest } from '../types/gapAnalysis.js';
+import { GapAnalysisRequest, GapAnalysisActionPlanRequest } from '../types/gapAnalysis.js';
 
 const router = Router();
 const gapAnalysisService = new GapAnalysisService();
@@ -90,6 +90,48 @@ router.post('/', async (req: Request<{}, {}, GapAnalysisRequest>, res: Response)
     return res.status(500).json({
       error: 'Internal Server Error',
       message: error?.message || 'An unexpected error occurred during requirement gap analysis.'
+    });
+  }
+});
+
+/**
+ * POST /api/gap-analysis/action-plan
+ * Generates or retrieves a structured practical action plan for a missing/partially matched requirement
+ */
+router.post('/action-plan', async (req: Request<{}, {}, GapAnalysisActionPlanRequest>, res: Response) => {
+  try {
+    const {
+      skill,
+      category,
+      job_description,
+      jobDescription,
+      resume_context,
+      resumeContext
+    } = req.body;
+
+    if (!skill || typeof skill !== 'string' || skill.trim().length === 0) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'A valid "skill" string is required in the request body.'
+      });
+    }
+
+    const jdText = job_description || jobDescription;
+    const resumeStr = resume_context || resumeContext;
+
+    const actionPlan = await gapAnalysisService.generateSkillActionPlan(
+      skill.trim(),
+      category || 'Core Skill',
+      jdText,
+      resumeStr
+    );
+
+    return res.status(200).json(actionPlan);
+  } catch (error: any) {
+    console.error('Error generating practical action plan:', error);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: error?.message || 'An unexpected error occurred while generating the practical skill action plan.'
     });
   }
 });
