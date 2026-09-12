@@ -38,3 +38,81 @@ export interface GapAnalysisResult {
   stats?: GapAnalysisStats;
   analyzed_at?: string;
 }
+
+export type CoverLetterPersona = 'strict_enterprise' | 'startup_tech_lead' | 'concise_direct';
+
+export interface CoverLetterResult {
+  cover_letter: string;
+  persona: CoverLetterPersona;
+  persona_label: string;
+  tone_attributes: {
+    voice: string;
+    formality: string;
+    pacing: string;
+  };
+  grounded_claims: string[];
+  grounding_score: number;
+  created_at: string;
+  model_used?: string;
+  is_fallback?: boolean;
+}
+
+export interface PersonaOption {
+  id: CoverLetterPersona;
+  name: string;
+  badge: string;
+  iconName: 'Building' | 'Rocket' | 'Zap';
+  shortDesc: string;
+  voice: string;
+  formality: string;
+  pacing: string;
+}
+
+export interface RecalculateScoreResult {
+  match_score: number;
+  previous_score?: number;
+  score_delta: number;
+  mandatory_coverage_pct: number;
+  keyword_overlap_pct: number;
+  impact_density_score: number;
+  readability_score: number;
+  matched_keywords: string[];
+  missing_keywords: string[];
+  metrics_detected: string[];
+  action_verbs_detected: string[];
+  suggestions: string[];
+  calculated_at: string;
+  latency_ms: number;
+}
+
+export interface ResumeVersionItem {
+  id: string;
+  userId: string;
+  jobId: string;
+  content: string;
+  matchScore: number;
+  createdAt: string;
+}
+
+export interface ScoreEvolutionPoint {
+  versionId: string;
+  iteration: number;
+  score: number;
+  createdAt: string;
+}
+
+export interface ResumeVersionHistoryData {
+  versions: ResumeVersionItem[];
+  total: number;
+  scoreEvolution: ScoreEvolutionPoint[];
+  stats: {
+    initialScore: number;
+    currentScore: number;
+    scoreDelta: number;
+    highestScore: number;
+    lowestScore: number;
+    totalIterations: number;
+  };
+}
+
+

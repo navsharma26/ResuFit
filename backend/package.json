@@ -7,20 +7,36 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx src/tests/gapAnalysis.test.ts"
+    "test": "tsx src/tests/runAllTests.ts",
+    "test:jest": "jest",
+    "test:cover-letter": "tsx src/tests/coverLetter.test.ts",
+    "test:gap-analysis": "tsx src/tests/gapAnalysis.test.ts",
+    "test:score": "tsx src/tests/recalculateScore.test.ts",
+    "test:versions": "tsx src/tests/resumeVersions.test.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "@types/multer": "^2.2.0",
+    "@types/pdf-parse": "^1.1.5",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "multer": "^2.3.0",
     "openai": "^4.86.1",
+    "pdf-parse": "^2.4.5",
+    "prisma": "^6.19.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.13.5",
+    "jest": "^30.5.1",
+    "ts-jest": "^29.4.12",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
   }

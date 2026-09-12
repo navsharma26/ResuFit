@@ -12,10 +12,14 @@ import {
   Activity,
   Cpu,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Zap
 } from 'lucide-react';
 import { GapAnalysisMatrix } from '../components/GapAnalysisMatrix';
 import { GapAnalysisResult } from '../components/types';
+import { CoverLetterGenerator } from '../components/CoverLetterGenerator';
+import { ResumeOptimizationWorkspace } from '../components/ResumeOptimizationWorkspace';
+import { ResumeFileUploader } from '../components/ResumeFileUploader';
 
 interface Preset {
   id: string;
@@ -163,6 +167,17 @@ export default function Home() {
     setError(null);
   };
 
+  // Apply uploaded resume to state
+  const handleApplyUploadedResume = async (_extractedText: string, chunks: string[]) => {
+    const validChunks = chunks.length > 0 ? chunks : [_extractedText];
+    setResumeChunks(validChunks);
+    setSelectedPresetId('custom-uploaded');
+    setError(null);
+
+    // Automatically run gap analysis with the newly uploaded chunks
+    await handleRunAnalysis(validChunks);
+  };
+
   // Add a new empty chunk
   const handleAddChunk = () => {
     setResumeChunks(prev => [...prev, '']);
@@ -183,13 +198,14 @@ export default function Home() {
   };
 
   // Execute Gap Analysis via Express Backend API
-  const handleRunAnalysis = async () => {
+  const handleRunAnalysis = async (overrideChunks?: string[] | unknown) => {
     if (!jobDescription.trim()) {
       setError('Please provide a job description.');
       return;
     }
 
-    const validChunks = resumeChunks.filter(c => c.trim().length > 0);
+    const chunksToUse = Array.isArray(overrideChunks) && overrideChunks.length > 0 ? overrideChunks : resumeChunks;
+    const validChunks = chunksToUse.filter(c => c.trim().length > 0);
     if (validChunks.length === 0) {
       setError('Please provide at least one non-empty resume chunk.');
       return;
@@ -300,6 +316,9 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Resume File Upload & What to Improve vs Discard Diagnostics */}
+      <ResumeFileUploader onApplyResume={handleApplyUploadedResume} />
+
       {/* Inputs: Split Layout */}
       <div className="input-grid">
         {/* Left: Job Description */}
@@ -362,7 +381,7 @@ export default function Home() {
       </div>
 
       {/* Action Bar */}
-      <div className="action-bar">
+      <div className="action-bar gap-4 flex-wrap">
         <button
           onClick={handleRunAnalysis}
           disabled={loading}
@@ -382,6 +401,25 @@ export default function Home() {
             </>
           )}
         </button>
+
+        <a
+          href="#interactive-resume-workspace"
+          className="generate-cl-shortcut-btn"
+          id="scroll-to-workspace-btn"
+          style={{ background: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.3)', color: '#fcd34d' }}
+        >
+          <Zap className="w-4 h-4 text-amber-400" />
+          <span>Interactive Live Optimizer</span>
+        </a>
+
+        <a
+          href="#cover-letter-generator"
+          className="generate-cl-shortcut-btn"
+          id="scroll-to-cover-letter-btn"
+        >
+          <FileText className="w-4 h-4 text-purple-400" />
+          <span>Cover Letter Generator</span>
+        </a>
       </div>
 
       {/* Error display */}
@@ -412,6 +450,18 @@ export default function Home() {
           </section>
         )}
       </div>
+
+      {/* Interactive Resume Optimization Workspace: Live Split-Screen Editor & Real-Time Scorecard */}
+      <ResumeOptimizationWorkspace
+        jobDescription={jobDescription}
+        defaultChunks={resumeChunks}
+      />
+
+      {/* Cover Letter Generation Section with Tone / Persona Selector */}
+      <CoverLetterGenerator
+        jobDescription={jobDescription}
+        resumeChunks={resumeChunks}
+      />
     </main>
   );
 }
