@@ -153,9 +153,18 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<GapAnalysisResult | null>(null);
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [isCloud, setIsCloud] = useState<boolean>(false);
 
   // Check backend health on mount
   useEffect(() => {
+    if (
+      typeof window !== 'undefined' &&
+      !window.location.hostname.includes('localhost') &&
+      !window.location.hostname.includes('127.0.0.1')
+    ) {
+      setIsCloud(true);
+    }
+
     async function checkHealth() {
       try {
         const res = await fetch('/api/health');
@@ -382,7 +391,9 @@ export default function Home() {
                 Backend:{' '}
                 <strong className="text-white">
                   {backendStatus === 'online'
-                    ? 'Online (Port 5001)'
+                    ? isCloud
+                      ? 'Online (Render Cloud)'
+                      : 'Online (Port 5001)'
                     : backendStatus === 'offline'
                     ? 'Connecting...'
                     : 'Checking...'}
