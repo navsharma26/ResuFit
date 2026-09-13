@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { GapAnalysisService } from '../services/gapAnalysisService.js';
 import { GapAnalysisRequest, GapAnalysisActionPlanRequest } from '../types/gapAnalysis.js';
+import { splitIntoChunks } from './uploadResume.js';
 
 const router = Router();
 const gapAnalysisService = new GapAnalysisService();
@@ -16,7 +17,7 @@ router.get('/', (_req: Request, res: Response) => {
     path: '/api/gap-analysis',
     expected_body: {
       job_description: 'Full text of the target job description (string)',
-      resume_chunks: ['Array of text chunks from applicant resume (string[])']
+      resume_chunks: ['Array of text chunks from applicant resume (string[]) or raw resume_text string']
     },
     output_schema: {
       matched_skills: 'Array of acquired technical skills verified in resume chunks',
@@ -29,19 +30,36 @@ router.get('/', (_req: Request, res: Response) => {
 
 /**
  * POST /api/gap-analysis
- * Analyzes gap between Job Description and Resume Chunks
+ * Analyzes gap between Job Description and Resume Chunks / Text
  */
 router.post('/', async (req: Request<{}, {}, GapAnalysisRequest>, res: Response) => {
   try {
     const {
       job_description,
       jobDescription,
+      jd,
+      job,
       resume_chunks,
-      resumeChunks
+      resumeChunks,
+      chunks,
+      resume_text,
+      resumeText,
+      resume,
+      resume_context,
+      resumeContext
     } = req.body;
 
-    const jdText = job_description || jobDescription;
-    const rawChunks = resume_chunks || resumeChunks;
+    const jdText = job_description || jobDescription || jd || job;
+    let rawChunks: any = resume_chunks || resumeChunks || chunks;
+
+    if (!rawChunks) {
+      const rawText = resume_text || resumeText || resume || resume_context || resumeContext;
+      if (typeof rawText === 'string' && rawText.trim().length > 0) {
+        rawChunks = splitIntoChunks(rawText);
+      }
+    } else if (typeof rawChunks === 'string') {
+      rawChunks = splitIntoChunks(rawChunks);
+    }
 
     // Validate Job Description
     if (!jdText || typeof jdText !== 'string' || jdText.trim().length === 0) {
@@ -55,16 +73,16 @@ router.post('/', async (req: Request<{}, {}, GapAnalysisRequest>, res: Response)
     if (!rawChunks || !Array.isArray(rawChunks) || rawChunks.length === 0) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'A non-empty "resume_chunks" array is required in the request body.'
+        message: 'A non-empty "resume_chunks" array or "resume_text" string is required in the request body.'
       });
     }
 
     // Normalize chunks to string[]
-    const normalizedChunks: string[] = rawChunks.map((chunk, index) => {
+    const normalizedChunks: string[] = rawChunks.map((chunk: any) => {
       if (typeof chunk === 'string') {
         return chunk.trim();
       } else if (chunk && typeof chunk === 'object' && 'text' in chunk) {
-        return String((chunk as any).text).trim();
+        return String(chunk.text).trim();
       } else {
         return String(chunk || '').trim();
       }
@@ -73,7 +91,7 @@ router.post('/', async (req: Request<{}, {}, GapAnalysisRequest>, res: Response)
     if (normalizedChunks.length === 0) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'At least one valid text chunk must be provided in "resume_chunks".'
+        message: 'At least one valid text chunk must be provided in "resume_chunks" or "resume_text".'
       });
     }
 
@@ -95,35 +113,28 @@ router.post('/', async (req: Request<{}, {}, GapAnalysisRequest>, res: Response)
 });
 
 /**
- * POST /api/gap-analysis/action-plan
- * Generates or retrieves a structured practical action plan for a missing/partially matched requirement
+ * Common handler for Practical Action Plan generation
  */
-router.post('/action-plan', async (req: Request<{}, {}, GapAnalysisActionPlanRequest>, res: Response) => {
+async function handleActionPlanGeneration(
+  skill: string | undefined,
+  category: string | undefined,
+  jobDescription: string | undefined,
+  resumeContext: string | string[] | undefined,
+  res: Response
+) {
   try {
-    const {
-      skill,
-      category,
-      job_description,
-      jobDescription,
-      resume_context,
-      resumeContext
-    } = req.body;
-
     if (!skill || typeof skill !== 'string' || skill.trim().length === 0) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'A valid "skill" string is required in the request body.'
+        message: 'A valid "skill" string is required in the request body or query parameters.'
       });
     }
-
-    const jdText = job_description || jobDescription;
-    const resumeStr = resume_context || resumeContext;
 
     const actionPlan = await gapAnalysisService.generateSkillActionPlan(
       skill.trim(),
       category || 'Core Skill',
-      jdText,
-      resumeStr
+      jobDescription,
+      resumeContext
     );
 
     return res.status(200).json(actionPlan);
@@ -134,6 +145,41 @@ router.post('/action-plan', async (req: Request<{}, {}, GapAnalysisActionPlanReq
       message: error?.message || 'An unexpected error occurred while generating the practical skill action plan.'
     });
   }
+}
+
+/**
+ * GET /api/gap-analysis/action-plan
+ * Allows fetching action plan via query params (e.g. ?skill=Docker&category=DevOps)
+ */
+router.get('/action-plan', (req: Request, res: Response) => {
+  const skill = (req.query.skill as string) || (req.query.name as string);
+  const category = (req.query.category as string);
+  const jdText = (req.query.job_description as string) || (req.query.jobDescription as string);
+  const resumeStr = (req.query.resume_context as string) || (req.query.resumeContext as string);
+
+  return handleActionPlanGeneration(skill, category, jdText, resumeStr, res);
+});
+
+/**
+ * POST /api/gap-analysis/action-plan
+ * Generates or retrieves a structured practical action plan for a missing/partially matched requirement
+ */
+router.post('/action-plan', (req: Request<{}, {}, GapAnalysisActionPlanRequest>, res: Response) => {
+  const {
+    skill,
+    name,
+    category,
+    job_description,
+    jobDescription,
+    resume_context,
+    resumeContext
+  } = req.body;
+
+  const targetSkill = skill || name || (req.query as any)?.skill;
+  const jdText = job_description || jobDescription;
+  const resumeStr = resume_context || resumeContext;
+
+  return handleActionPlanGeneration(targetSkill, category, jdText, resumeStr, res);
 });
 
 export default router;

@@ -152,7 +152,21 @@ ${formattedChunks}
     const parsed = JSON.parse(rawContent);
 
     // Normalize and compute stats
-    const matched_skills: MatchedSkill[] = Array.isArray(parsed.matched_skills) ? parsed.matched_skills : [];
+    const matched_skills: MatchedSkill[] = Array.isArray(parsed.matched_skills) 
+      ? parsed.matched_skills.map((s: any) => {
+          const evidenceAnalysis = this.analyzeEvidenceSnippet(s.resume_evidence || '');
+          return {
+            skill: s.skill,
+            category: s.category || 'General',
+            resume_evidence: s.resume_evidence || '',
+            confidence: typeof s.confidence === 'number' ? s.confidence : evidenceAnalysis.confidence,
+            chunk_index: s.chunk_index,
+            evidence_strength: s.evidence_strength || evidenceAnalysis.strength,
+            quantified_metrics: s.quantified_metrics || evidenceAnalysis.metrics
+          };
+        })
+      : [];
+
     const missing_mandatory_skills: MissingMandatorySkill[] = Array.isArray(parsed.missing_mandatory_skills) 
       ? parsed.missing_mandatory_skills.map((s: any) => {
           const readiness = s.readiness_plan || this.generateReadinessPlan(s.skill, s.category || 'Core Skill', true, jobDescription, formattedChunks);
@@ -172,13 +186,16 @@ ${formattedChunks}
           if (n.status === 'missing' && !readiness) {
             readiness = this.generateReadinessPlan(n.skill, n.category || 'Nice-to-Have', false, jobDescription, formattedChunks);
           }
+          const evidenceAnalysis = n.status === 'matched' ? this.analyzeEvidenceSnippet(n.resume_evidence || '') : undefined;
           return {
             skill: n.skill,
             category: n.category || 'Preferred',
             status: n.status === 'matched' ? 'matched' : 'missing',
             resume_evidence: n.resume_evidence || '',
             bonus_value: n.bonus_value || 'medium',
-            readiness_plan: readiness
+            readiness_plan: readiness,
+            evidence_strength: evidenceAnalysis?.strength,
+            quantified_metrics: evidenceAnalysis?.metrics
           };
         })
       : [];
@@ -199,6 +216,20 @@ ${formattedChunks}
       }
     }
 
+    const finalMatchScore = Math.min(100, Math.max(0, matchScore));
+
+    // Calculate projected score deltas & ROI prioritization
+    const missingNice = nice_to_haves.filter(n => n.status === 'missing');
+    this.calculateProjectedDeltasAndROI(
+      totalMandatory,
+      matchedMandatory,
+      totalNice,
+      matchedNice,
+      finalMatchScore,
+      missing_mandatory_skills,
+      missingNice
+    );
+
     const stats: GapAnalysisStats = {
       total_mandatory: totalMandatory,
       matched_mandatory: matchedMandatory,
@@ -217,6 +248,8 @@ ${formattedChunks}
           category: s.category,
           is_mandatory: true,
           impact_or_bonus: s.impact,
+          projected_score_delta: s.projected_score_delta,
+          roi_priority: s.roi_priority,
           ...s.readiness_plan
         });
       }
@@ -229,6 +262,8 @@ ${formattedChunks}
           category: n.category,
           is_mandatory: false,
           impact_or_bonus: n.bonus_value,
+          projected_score_delta: n.projected_score_delta,
+          roi_priority: n.roi_priority,
           ...n.readiness_plan
         });
       }
@@ -238,7 +273,7 @@ ${formattedChunks}
       matched_skills,
       missing_mandatory_skills,
       nice_to_haves,
-      match_score: Math.min(100, Math.max(0, matchScore)),
+      match_score: finalMatchScore,
       summary: parsed.summary || `Candidate covers ${matchedMandatory} of ${totalMandatory} mandatory technical requirements.`,
       career_readiness,
       stats,
@@ -259,93 +294,130 @@ ${formattedChunks}
     const jdLower = jobDescription.toLowerCase();
 
     // Catalog of standard technical skills, categories, and heuristics
-    const skillCatalog = [
-      { name: 'TypeScript', category: 'Languages', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'JavaScript', category: 'Languages', isMandatoryDefault: true, bonus: 'medium' as const },
-      { name: 'Python', category: 'Languages', isMandatoryDefault: false, bonus: 'medium' as const },
-      { name: 'Node.js', category: 'Backend & Runtime', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'Express', category: 'Backend & Runtime', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'React', category: 'Frontend', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'Next.js', category: 'Frontend', isMandatoryDefault: false, bonus: 'high' as const },
-      { name: 'PostgreSQL', category: 'Databases', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'MongoDB', category: 'Databases', isMandatoryDefault: false, bonus: 'medium' as const },
-      { name: 'Redis', category: 'Databases & Caching', isMandatoryDefault: false, bonus: 'medium' as const },
-      { name: 'GraphQL', category: 'API Design', isMandatoryDefault: false, bonus: 'medium' as const },
-      { name: 'REST APIs', category: 'API Design', isMandatoryDefault: true, bonus: 'medium' as const },
-      { name: 'Docker', category: 'DevOps & Cloud', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'Kubernetes', category: 'DevOps & Cloud', isMandatoryDefault: false, bonus: 'high' as const },
-      { name: 'AWS', category: 'Cloud Infrastructure', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'CI/CD Pipelines', category: 'DevOps', isMandatoryDefault: false, bonus: 'medium' as const },
-      { name: 'Tailwind CSS', category: 'Frontend', isMandatoryDefault: false, bonus: 'low' as const },
-      { name: 'Microservices', category: 'Architecture', isMandatoryDefault: false, bonus: 'high' as const },
-      { name: 'Jest / Testing', category: 'Testing & QA', isMandatoryDefault: false, bonus: 'medium' as const }
+    const skillCatalog: Array<{
+      name: string;
+      category: string;
+      isMandatoryDefault: boolean;
+      bonus: 'high' | 'medium' | 'low';
+      pattern: RegExp;
+    }> = [
+      // Languages
+      { name: 'TypeScript', category: 'Languages', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:typescript|ts)\b/i },
+      { name: 'JavaScript', category: 'Languages', isMandatoryDefault: true, bonus: 'medium' as const, pattern: /\b(?:javascript|js|es6\+?|ecmascript)\b/i },
+      { name: 'Python', category: 'Languages', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\bpython(?:3)?\b/i },
+      { name: 'Golang', category: 'Languages', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:golang|go\s*lang)\b|(?:\bgo\b(?=.*(?:programming|developer|engineer|language|backend|microservice)))/i },
+      { name: 'Rust', category: 'Languages', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\brust\b/i },
+      { name: 'SQL', category: 'Databases & Languages', isMandatoryDefault: true, bonus: 'medium' as const, pattern: /\b(?:sql|postgresql|mysql|sqlite|t-sql|pl\/sql)\b/i },
+
+      // Backend & Runtime
+      { name: 'Node.js', category: 'Backend & Runtime', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:node\.?js|node)\b/i },
+      { name: 'Express', category: 'Backend & Runtime', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:express\.?js|express)\b/i },
+      { name: 'FastAPI', category: 'Backend & Runtime', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\bfast[\s-]?api\b/i },
+      { name: 'NestJS', category: 'Backend & Runtime', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\bnest[\s-.]?js\b/i },
+      { name: 'Microservices', category: 'Architecture', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\bmicro[\s-]?services?\b/i },
+      { name: 'gRPC', category: 'API Design', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\bgrpc\b/i },
+      { name: 'GraphQL', category: 'API Design', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\bgraphql\b/i },
+      { name: 'REST APIs', category: 'API Design', isMandatoryDefault: true, bonus: 'medium' as const, pattern: /\b(?:rest(?:ful)?(?:\s+apis?)?|rest\s+api)\b/i },
+
+      // Frontend
+      { name: 'React', category: 'Frontend', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:react\.?js|react)\b/i },
+      { name: 'Next.js', category: 'Frontend', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:next\.?js|nextjs|next(?:\s+1[345])?)\b/i },
+      { name: 'Vue.js', category: 'Frontend', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\b(?:vue\.?js|vuejs|vue)\b/i },
+      { name: 'Tailwind CSS', category: 'Frontend', isMandatoryDefault: false, bonus: 'low' as const, pattern: /\btailwind(?:[\s-]?css)?\b/i },
+
+      // Databases & Caching
+      { name: 'PostgreSQL', category: 'Databases', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:postgres(?:ql)?)\b/i },
+      { name: 'MongoDB', category: 'Databases', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\bmongo(?:db)?\b/i },
+      { name: 'Redis', category: 'Databases & Caching', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\bredis\b/i },
+      { name: 'pgvector', category: 'AI & Databases', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\bpgvector\b/i },
+
+      // AI, LLM & Data
+      { name: 'OpenAI API', category: 'AI & LLM', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:openai(?:\s+api)?|gpt-?4o?|chatgpt)\b/i },
+      { name: 'RAG Architecture', category: 'AI & LLM', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:rag|retrieval[\s-]augmented(?:\s+generation)?)\b/i },
+      { name: 'Pinecone', category: 'AI & Databases', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\bpinecone\b/i },
+      { name: 'LangChain', category: 'AI & LLM', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\blangchain\b/i },
+      { name: 'Vector Embeddings', category: 'AI & LLM', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:vector[\s-]?(?:embeddings?|search|databases?|db)|embeddings?)\b/i },
+
+      // DevOps, Cloud & Streaming
+      { name: 'Docker', category: 'DevOps & Cloud', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:docker|container(?:iz(?:ed?|ing)|s)?)\b/i },
+      { name: 'Kubernetes', category: 'DevOps & Cloud', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:kubernetes|k8s)\b/i },
+      { name: 'AWS', category: 'Cloud Infrastructure', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:aws|amazon\s+web\s+services|ecs|rds|s3|ec2|lambda|cloudwatch)\b/i },
+      { name: 'Terraform', category: 'Cloud Infrastructure', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:terraform|iac|infrastructure\s+as\s+code)\b/i },
+      { name: 'CI/CD Pipelines', category: 'DevOps', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\b(?:ci[\s/]?cd(?:\s+pipelines?)?|continuous\s+integration)\b/i },
+      { name: 'GitHub Actions', category: 'DevOps', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\b(?:github\s+actions|gh\s+actions)\b/i },
+      { name: 'Kafka', category: 'Event Streaming', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\bkafka\b/i },
+      { name: 'RabbitMQ', category: 'Event Streaming', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\brabbit[\s-]?mq\b/i },
+
+      // Testing & Security
+      { name: 'Jest / Testing', category: 'Testing & QA', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\b(?:jest|vitest|mocha|unit\s+tests?|automated\s+tests?|integration\s+tests?|tdd)\b/i },
+      { name: 'Playwright', category: 'Testing & QA', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\b(?:playwright|cypress|selenium|e2e\s+testing|end-to-end\s+testing)\b/i },
+      { name: 'OAuth 2.0', category: 'Security & Auth', isMandatoryDefault: false, bonus: 'medium' as const, pattern: /\b(?:oauth(?:\s*2(?:\.0)?)?|jwt|json\s+web\s+tokens?|sso|saml)\b/i }
     ];
 
     const matched_skills: MatchedSkill[] = [];
     const missing_mandatory_skills: MissingMandatorySkill[] = [];
     const nice_to_haves: NiceToHaveSkill[] = [];
 
-    // Detect skills present in JD
-    const detectedInJd = skillCatalog.filter(skill => {
-      const regex = new RegExp(`\\b${skill.name.toLowerCase().replace('.', '\\.')}\\b`, 'i');
-      return regex.test(jdLower);
-    });
+    // Detect skills present in JD with exact regex patterns
+    const detectedInJd = skillCatalog.filter(skill => skill.pattern.test(jobDescription));
 
-    // If JD is specific or custom, also extract capitalized tech patterns from JD
-    const customTechTerms = ['kafka', 'elasticsearch', 'grpc', 'terraform', 'vue', 'angular', 'golang', 'rust'];
+    // If JD is specific or custom, also extract recognized tech patterns from JD
+    const customTechTerms = ['elasticsearch', 'angular', 'celery', 'pydantic', 'pytorch', 'solidity'];
     customTechTerms.forEach(term => {
-      if (jdLower.includes(term) && !detectedInJd.some(s => s.name.toLowerCase() === term)) {
+      const termRegex = new RegExp(`\\b${term}\\b`, 'i');
+      if (termRegex.test(jobDescription) && !detectedInJd.some(s => s.name.toLowerCase() === term)) {
         detectedInJd.push({
           name: term.charAt(0).toUpperCase() + term.slice(1),
           category: 'Specialized Tech',
-          isMandatoryDefault: jdLower.includes('must') || jdLower.includes('required'),
-          bonus: 'medium' as const
+          isMandatoryDefault: jdLower.includes('must') || jdLower.includes('required') || jdLower.includes('mandatory'),
+          bonus: 'medium' as const,
+          pattern: termRegex
         });
       }
     });
 
     // If no catalog skill found, supply a default baseline based on JD content
     const finalSkillsToEvaluate = detectedInJd.length > 0 ? detectedInJd : [
-      { name: 'TypeScript', category: 'Languages', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'Express', category: 'Backend', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'React', category: 'Frontend', isMandatoryDefault: true, bonus: 'high' as const },
-      { name: 'Docker', category: 'DevOps', isMandatoryDefault: true, bonus: 'medium' as const },
-      { name: 'Kubernetes', category: 'DevOps', isMandatoryDefault: false, bonus: 'high' as const },
-      { name: 'AWS', category: 'Cloud', isMandatoryDefault: false, bonus: 'high' as const }
+      { name: 'TypeScript', category: 'Languages', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:typescript|ts)\b/i },
+      { name: 'Express', category: 'Backend', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:express\.?js|express)\b/i },
+      { name: 'React', category: 'Frontend', isMandatoryDefault: true, bonus: 'high' as const, pattern: /\b(?:react\.?js|react)\b/i },
+      { name: 'Docker', category: 'DevOps', isMandatoryDefault: true, bonus: 'medium' as const, pattern: /\b(?:docker|container(?:iz(?:ed?|ing)|s)?)\b/i },
+      { name: 'Kubernetes', category: 'DevOps', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:kubernetes|k8s)\b/i },
+      { name: 'AWS', category: 'Cloud', isMandatoryDefault: false, bonus: 'high' as const, pattern: /\b(?:aws|amazon\s+web\s+services)\b/i }
     ];
 
     finalSkillsToEvaluate.forEach((skillItem) => {
-      const skillNameLower = skillItem.name.toLowerCase();
-      
       // Identify position of nice-to-have boundary in JD if present
       const niceBoundaryRegex = /(?:nice to have|preferred|bonus|plus|optional)/i;
       const niceMatch = jdLower.match(niceBoundaryRegex);
       const niceBoundaryIndex = niceMatch && niceMatch.index !== undefined ? niceMatch.index : -1;
 
       // Find position of this skill in JD
-      const skillIndexInJd = jdLower.indexOf(skillNameLower);
+      const patternMatch = jobDescription.match(skillItem.pattern);
+      const skillIndexInJd = patternMatch && patternMatch.index !== undefined ? patternMatch.index : jdLower.indexOf(skillItem.name.toLowerCase());
 
       let isNiceToHave = false;
       if (niceBoundaryIndex !== -1 && skillIndexInJd > niceBoundaryIndex) {
         isNiceToHave = true;
+      } else if (jdLower.includes('must') || jdLower.includes('required') || jdLower.includes('mandatory') || jdLower.includes('minimum qualification')) {
+        isNiceToHave = false;
       } else if (skillItem.isMandatoryDefault) {
         isNiceToHave = false;
       } else {
         isNiceToHave = !skillItem.isMandatoryDefault;
       }
 
-      // Find in chunks
+      // Find in chunks using high-precision regex matching
       let matchedChunkIndex = -1;
       let matchedSnippet = '';
 
       for (let i = 0; i < resumeChunks.length; i++) {
         const chunk = resumeChunks[i];
-        if (chunk.toLowerCase().includes(skillNameLower)) {
+        if (skillItem.pattern.test(chunk)) {
           matchedChunkIndex = i + 1;
-          // Extract sentence or context
-          const sentences = chunk.split(/[.\n]/);
-          const relevantSentence = sentences.find(s => s.toLowerCase().includes(skillNameLower));
-          matchedSnippet = relevantSentence ? relevantSentence.trim() : chunk.slice(0, 140).trim();
+          const sentences = chunk.split(/(?<=[a-zA-Z0-9])\.\s+(?=[A-Z])|\n+/).map(s => s.trim()).filter(Boolean);
+          const relevantSentence = sentences.find(s => skillItem.pattern.test(s));
+          matchedSnippet = relevantSentence || chunk.slice(0, 140).trim();
           break;
         }
       }
@@ -368,13 +440,16 @@ ${formattedChunks}
       const isWeakClaim = matchedSnippet.length > 0 && weakQualifiers.some(q => matchedSnippet.toLowerCase().includes(q));
 
       if (matchedChunkIndex !== -1 && !isWeakClaim) {
+        const evidenceAnalysis = this.analyzeEvidenceSnippet(matchedSnippet);
         if (!isNiceToHave) {
           matched_skills.push({
             skill: skillItem.name,
             category: skillItem.category,
             resume_evidence: matchedSnippet || `Demonstrated hands-on experience with ${skillItem.name} documented in resume.`,
-            confidence: 0.95,
-            chunk_index: matchedChunkIndex
+            confidence: evidenceAnalysis.confidence,
+            chunk_index: matchedChunkIndex,
+            evidence_strength: evidenceAnalysis.strength,
+            quantified_metrics: evidenceAnalysis.metrics
           });
         } else {
           nice_to_haves.push({
@@ -382,7 +457,9 @@ ${formattedChunks}
             category: skillItem.category,
             status: 'matched',
             resume_evidence: matchedSnippet || `Proficiency in ${skillItem.name} confirmed in candidate chunks.`,
-            bonus_value: skillItem.bonus
+            bonus_value: skillItem.bonus,
+            evidence_strength: evidenceAnalysis.strength,
+            quantified_metrics: evidenceAnalysis.metrics
           });
         }
       } else {
@@ -418,6 +495,19 @@ ${formattedChunks}
     const mandatoryRatio = totalMandatory > 0 ? matchedMandatory / totalMandatory : 1;
     const niceRatio = totalNice > 0 ? matchedNice / totalNice : 0.5;
     const match_score = Math.round((mandatoryRatio * 80) + (niceRatio * 20));
+    const finalMatchScore = Math.min(100, Math.max(10, match_score));
+
+    // Calculate projected score deltas & ROI prioritization
+    const missingNice = nice_to_haves.filter(n => n.status === 'missing');
+    this.calculateProjectedDeltasAndROI(
+      totalMandatory,
+      matchedMandatory,
+      totalNice,
+      matchedNice,
+      finalMatchScore,
+      missing_mandatory_skills,
+      missingNice
+    );
 
     const stats: GapAnalysisStats = {
       total_mandatory: totalMandatory,
@@ -441,6 +531,8 @@ ${formattedChunks}
           category: s.category,
           is_mandatory: true,
           impact_or_bonus: s.impact,
+          projected_score_delta: s.projected_score_delta,
+          roi_priority: s.roi_priority,
           ...s.readiness_plan
         });
       }
@@ -453,6 +545,8 @@ ${formattedChunks}
           category: n.category,
           is_mandatory: false,
           impact_or_bonus: n.bonus_value,
+          projected_score_delta: n.projected_score_delta,
+          roi_priority: n.roi_priority,
           ...n.readiness_plan
         });
       }
@@ -462,12 +556,126 @@ ${formattedChunks}
       matched_skills,
       missing_mandatory_skills,
       nice_to_haves,
-      match_score: Math.min(100, Math.max(10, match_score)),
+      match_score: finalMatchScore,
       summary: summaryNotice,
       career_readiness,
       stats,
       analyzed_at: new Date().toISOString()
     };
+  }
+
+  /**
+   * Evidence Depth & Metrics Analyzer
+   * Evaluates text snippets for quantified metrics, production verbs, or weak claims
+   */
+  public analyzeEvidenceSnippet(snippet: string): {
+    strength: 'high' | 'moderate' | 'surface';
+    confidence: number;
+    metrics: string[];
+  } {
+    if (!snippet || snippet.trim().length === 0) {
+      return { strength: 'surface', confidence: 0.5, metrics: [] };
+    }
+
+    const textLower = snippet.toLowerCase();
+
+    // Metrics extractor: percentages, dollar volumes, scale numbers, latency, units
+    const metricRegex = /(?:\$\d+(?:\.\d+)?[MBKmbk]?\+?|\d+(?:\.\d+)?%|\b\d{1,3}(?:,\d{3})+\+?|\b\d+\+?\s*(?:microservices|services|users|requests|rps|qps|ms|seconds|minutes|days|hours|nodes|instances|clusters|tb|gb)\b|\b\d+x\b)/gi;
+    const matches = snippet.match(metricRegex) || [];
+    const metrics = Array.from(new Set(matches.map(m => m.trim())));
+
+    // Production action verbs
+    const actionVerbs = [
+      'architected', 'built', 'designed', 'developed', 'deployed', 'implemented',
+      'optimized', 'engineered', 'spearheaded', 'scaled', 'migrated', 'containerized',
+      'automated', 'orchestrated', 'benchmarked', 'refactored', 'integrated', 'delivered'
+    ];
+    const matchedVerbs = actionVerbs.filter(v => textLower.includes(v));
+
+    // Weak qualifiers
+    const weakQualifiers = [
+      'familiar with', 'familiarity with', 'basic knowledge', 'basic understanding',
+      'exposure to', 'heard of', 'heard about', 'learning', 'studied', 'beginner in', 'beginner', 'interest in'
+    ];
+    const hasWeak = weakQualifiers.some(w => textLower.includes(w));
+
+    if (hasWeak) {
+      return {
+        strength: 'surface',
+        confidence: 0.60,
+        metrics
+      };
+    }
+
+    if (metrics.length > 0 || matchedVerbs.length >= 2) {
+      return {
+        strength: 'high',
+        confidence: 0.98,
+        metrics
+      };
+    }
+
+    if (matchedVerbs.length >= 1) {
+      return {
+        strength: 'moderate',
+        confidence: 0.88,
+        metrics
+      };
+    }
+
+    return {
+      strength: 'moderate',
+      confidence: 0.80,
+      metrics
+    };
+  }
+
+  /**
+   * Calculates projected ATS score deltas and ROI priority for each gap
+   */
+  private calculateProjectedDeltasAndROI(
+    totalMandatory: number,
+    matchedMandatory: number,
+    totalNice: number,
+    matchedNice: number,
+    baseScore: number,
+    missingMandatory: MissingMandatorySkill[],
+    missingNice: NiceToHaveSkill[]
+  ): void {
+    const mandatoryRatio = totalMandatory > 0 ? matchedMandatory / totalMandatory : 1;
+    const niceRatio = totalNice > 0 ? matchedNice / totalNice : 0.5;
+
+    // Delta for mandatory requirement
+    const newMandatoryRatio = totalMandatory > 0 ? (matchedMandatory + 1) / totalMandatory : 1;
+    const mandatoryNewScore = Math.round((newMandatoryRatio * 80) + (niceRatio * 20));
+    const mandatoryDelta = Math.max(1, mandatoryNewScore - baseScore);
+
+    // Delta for nice-to-have requirement
+    const newNiceRatio = totalNice > 0 ? (matchedNice + 1) / totalNice : 1;
+    const niceNewScore = Math.round((mandatoryRatio * 80) + (newNiceRatio * 20));
+    const niceDelta = Math.max(1, niceNewScore - baseScore);
+
+    missingMandatory.forEach(s => {
+      s.projected_score_delta = mandatoryDelta;
+      const hours = s.readiness_plan?.estimated_time || '4-6 hours';
+      const isQuick = (hours.includes('2-4') || hours.includes('3-5') || hours.includes('4-6')) && mandatoryDelta >= 6;
+      s.roi_priority = isQuick ? 'Quick Win' : 'Core Investment';
+      if (s.readiness_plan) {
+        s.readiness_plan.projected_score_delta = mandatoryDelta;
+        s.readiness_plan.roi_priority = s.roi_priority;
+      }
+    });
+
+    missingNice.forEach(n => {
+      n.projected_score_delta = niceDelta;
+      const hours = n.readiness_plan?.estimated_time || '3-5 hours';
+      const isQuick = hours.includes('2-4') || hours.includes('3-5');
+      n.roi_priority = isQuick ? 'Quick Win' : 'Secondary';
+      if (n.readiness_plan) {
+        n.readiness_plan.projected_score_delta = niceDelta;
+        n.readiness_plan.roi_priority = n.roi_priority;
+      }
+    });
   }
 
   /**
@@ -524,196 +732,372 @@ ${formattedChunks}
             'README.md setup instructions detailing build and run steps',
             'GitHub repository commit history showing working containerization',
             'Automated container health check script or CI build step'
-          ]
+          ],
+          estimated_time: '4-6 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
         };
       }
 
-    if (sLower.includes('postgres') || sLower.includes('sql') || sLower.includes('database')) {
+      if (sLower.includes('postgres') || sLower.includes('sql') || sLower.includes('database')) {
+        return {
+          why_it_matters: 'Relational database proficiency is essential for data integrity, ACID compliance, complex relational queries, and safe schema migrations.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Design and implement a normalized PostgreSQL database schema with foreign keys, indexes, and automated migration scripts.',
+          suggested_proof: [
+            'Database schema migration files (.sql or Prisma schema)',
+            'Query optimization proof using EXPLAIN ANALYZE on indexed queries',
+            'Connection pool setup and parameterized query repository pattern in code',
+            'Integration test suite verifying database transactions and rollback behavior',
+            'Entity Relationship Diagram (ERD) documented in project README'
+          ],
+          estimated_time: '6-8 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      if (sLower.includes('kubernetes') || sLower.includes('k8s')) {
+        return {
+          why_it_matters: 'Kubernetes orchestrates containerized services across clusters, managing automated self-healing, rolling deployments, and service discovery.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Deploy a containerized application to a local Kubernetes cluster (Minikube or Kind) with Deployment, Service, and ConfigMap manifests.',
+          suggested_proof: [
+            'k8s deployment.yaml specifying replica sets, CPU/memory limits, and restart policies',
+            'service.yaml and Ingress controller routing configuration',
+            'Liveness and readiness health probe definitions in deployment specs',
+            'Local verification instructions with kubectl commands documented in README',
+            'GitHub repository containing structured k8s manifests under /k8s directory'
+          ],
+          estimated_time: '10-15 hours',
+          difficulty: 'Advanced' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      if (sLower.includes('redis') || sLower.includes('cache')) {
+        return {
+          why_it_matters: 'In-memory caching with Redis significantly improves response times, absorbs traffic spikes, and powers distributed session management.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Integrate Redis into an existing backend as a cache-aside layer with TTL invalidation, rate limiting, or session store.',
+          suggested_proof: [
+            'Redis client module with retry and exponential backoff logic',
+            'Cache-aside retrieval logic with explicit TTL and key naming conventions',
+            'Benchmark report or latency chart showing p99 reduction (cache hit vs miss)',
+            'Automated tests verifying cache invalidation upon record mutation',
+            'Local compose.yaml service definition for Redis'
+          ],
+          estimated_time: '3-5 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      if (sLower.includes('aws') || sLower.includes('cloud')) {
+        return {
+          why_it_matters: 'Cloud infrastructure mastery is required to deploy, secure, and scale distributed architectures with enterprise reliability.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Deploy a containerized application to an AWS environment (such as ECS Fargate, App Runner, or EC2) with IAM least-privilege security.',
+          suggested_proof: [
+            'Infrastructure-as-Code template (Terraform, AWS CDK, or CloudFormation)',
+            'Cloud architecture diagram illustrating VPC, subnets, and security groups',
+            'GitHub Actions workflow automating deployment to AWS',
+            'IAM policy document adhering to least-privilege principles',
+            'Live staging URL or deployment execution verification log'
+          ],
+          estimated_time: '8-12 hours',
+          difficulty: 'Advanced' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      if (sLower.includes('ci/cd') || sLower.includes('pipeline') || sLower.includes('github actions')) {
+        return {
+          why_it_matters: 'Automated CI/CD pipelines prevent regressions, standardize linting and testing, and ensure rapid, dependable production releases.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build a multi-stage GitHub Actions workflow that automatically runs linting, unit tests, and security scans on every pull request.',
+          suggested_proof: [
+            '.github/workflows/ci.yml configuration file with build matrix',
+            'Passing build status badge displayed prominently in repository README',
+            'Automated test coverage report generated and published as CI artifact',
+            'Branch protection rule enforcement requiring passing status checks',
+            'Automated semantic release and changelog generation workflow'
+          ],
+          estimated_time: '2-4 hours',
+          difficulty: 'Beginner' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      if (sLower.includes('typescript')) {
+        return {
+          why_it_matters: 'Strict TypeScript typing eliminates runtime type errors, provides self-documenting codebases, and enhances team refactoring velocity.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build or migrate a project using strict TypeScript with custom interfaces, generic utility types, and zero `any` types.',
+          suggested_proof: [
+            'tsconfig.json configured with strict: true and noImplicitAny: true',
+            'Structured domain models and interface definitions in a dedicated types/ folder',
+            'Clean zero-error compilation build (tsc --noEmit)',
+            'Automated CI check enforcing type verification',
+            'GitHub repository demonstrating comprehensive typed endpoints'
+          ],
+          estimated_time: '4-6 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      if (sLower.includes('graphql')) {
+        return {
+          why_it_matters: 'GraphQL enables client-driven data querying, avoiding over-fetching and consolidating multiple REST microservices into a single graph.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build a GraphQL service with schema definition, query and mutation resolvers, and DataLoader to solve N+1 query performance issues.',
+          suggested_proof: [
+            'Schema definition file (.graphql) with strongly typed entities and mutations',
+            'DataLoader implementation batching relational database queries',
+            'Postman or Apollo Studio test collection export demonstrating queries',
+            'Automated integration tests validating schema queries and error handling',
+            'GitHub repository documenting GraphQL schema in README'
+          ],
+          estimated_time: '5-7 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      if (sLower.includes('react') || sLower.includes('frontend')) {
+        return {
+          why_it_matters: 'Modern frontend development requires component modularity, state management predictability, and responsive, accessible UI rendering.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build a responsive web application implementing custom hooks, optimistic UI state updates, and accessible component design.',
+          suggested_proof: [
+            'Component hierarchy code with custom reusable hooks',
+            'State management implementation (Zustand, Redux Toolkit, or Context)',
+            'Automated component unit tests using React Testing Library or Vitest',
+            'Lighthouse performance and accessibility score audit report (90+)',
+            'Live deployed demo URL (Vercel / Netlify / GitHub Pages)'
+          ],
+          estimated_time: '4-6 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      if (sLower.includes('python')) {
+        return {
+          why_it_matters: 'Python proficiency is standard for AI/ML engineering, data pipelines, automation scripting, and asynchronous REST APIs.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build a Python service using FastAPI or Flask, complete with Pydantic data validation, type hints, and pytest coverage.',
+          suggested_proof: [
+            'FastAPI/Flask application with Pydantic request/response validation',
+            'pytest test suite with fixtures and coverage reports',
+            'pyproject.toml or requirements.txt dependency specifications',
+            'Type annotations validated via mypy',
+            'GitHub repository documenting API endpoints and setup instructions'
+          ],
+          estimated_time: '5-7 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      if (sLower.includes('jest') || sLower.includes('test')) {
+        return {
+          why_it_matters: 'Automated testing suites ensure regression resilience, validate edge cases, and give teams confidence during refactoring and rapid shipping.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Implement a comprehensive test suite with unit, integration, and mock tests targeting high branch coverage on core logic.',
+          suggested_proof: [
+            'Jest / Vitest configuration with test scripts in package.json',
+            'Test suite covering happy paths, edge cases, and error handlers',
+            'Mocking of external dependencies and database clients',
+            'Code coverage report artifact demonstrating 80%+ line coverage',
+            'GitHub Actions workflow executing tests on pull requests'
+          ],
+          estimated_time: '3-5 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      // Specialized Blueprint: RAG & Vector Databases
+      if (sLower.includes('rag') || sLower.includes('vector') || sLower.includes('pinecone') || sLower.includes('langchain') || sLower.includes('embedding')) {
+        return {
+          why_it_matters: 'Retrieval-Augmented Generation (RAG) grounds LLM outputs with domain documents, eliminating hallucinations and enabling real-time factual knowledge retrieval.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build an end-to-end RAG pipeline using a vector database (Pinecone or pgvector) with chunking, semantic similarity retrieval, and citation verification.',
+          suggested_proof: [
+            'Vector indexing and embedding ingestion pipeline script',
+            'Cosine similarity query benchmark demonstrating sub-100ms retrieval',
+            'Evaluation test suite testing recall, precision, and hallucination reduction',
+            'API endpoint serving grounded LLM responses with source citations',
+            'GitHub repository documenting embedding models and vector index configuration'
+          ],
+          estimated_time: '6-8 hours',
+          difficulty: 'Advanced' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      // Specialized Blueprint: RabbitMQ Message Queues
+      if (sLower.includes('rabbitmq')) {
+        return {
+          why_it_matters: 'RabbitMQ provides reliable AMQP message brokering, flexible routing topologies (direct, fanout, topic), and guaranteed queue delivery for decoupled asynchronous workloads.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build an AMQP publisher and consumer service pattern with exchange/queue bindings, manual acknowledgments, and dead-letter exchanges (DLX).',
+          suggested_proof: [
+            'AMQP producer and consumer implementations with manual ack/nack handling',
+            'compose.yaml running RabbitMQ container with Management Plugin enabled',
+            'Dead-letter exchange (DLX) and queue binding configuration module',
+            'Automated integration tests asserting message delivery and error retries',
+            'Architecture topology diagram and message throughput log in README'
+          ],
+          estimated_time: '5-7 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Secondary' as const
+        };
+      }
+
+      // Specialized Blueprint: Event Streaming & Message Queues (Kafka)
+      if (sLower.includes('kafka') || sLower.includes('event') || sLower.includes('streaming')) {
+        return {
+          why_it_matters: 'Distributed event streaming with Kafka decouples asynchronous microservices, guarantees event ordering, and processes high-throughput real-time data pipelines.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Implement a decoupled producer/consumer event-driven microservice pattern with topic partitioning, consumer group rebalancing, and dead-letter queues.',
+          suggested_proof: [
+            'Kafka producer and consumer service implementations with error retry policies',
+            'compose.yaml running multi-broker Kafka / Zookeeper or KRaft cluster',
+            'Dead-letter queue (DLQ) handler module for poison messages',
+            'Integration tests verifying at-least-once delivery semantics and idempotency',
+            'Architecture flow diagram and benchmark report in README'
+          ],
+          estimated_time: '8-10 hours',
+          difficulty: 'Advanced' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      // Specialized Blueprint: Infrastructure as Code (Terraform)
+      if (sLower.includes('terraform') || sLower.includes('iac') || sLower.includes('infrastructure as code')) {
+        return {
+          why_it_matters: 'Infrastructure as Code with Terraform standardizes multi-cloud resource provisioning, enables state drift detection, and codifies security baselines in version control.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Author modular Terraform code (.tf) provisioning VPC networking, container runtimes, and managed databases with remote state locking.',
+          suggested_proof: [
+            'Terraform modular configuration files (.tf) with parameterized variables and outputs',
+            'Remote backend configuration with S3 state storage and DynamoDB state locking',
+            'terraform plan execution log demonstrating zero resource drift',
+            'Automated validation checks in CI pipeline (tflint and checkov/tfsec)',
+            'GitHub repository with environment separation (staging/prod)'
+          ],
+          estimated_time: '5-7 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      // Specialized Blueprint: Golang & gRPC
+      if (sLower.includes('golang') || sLower.includes('go ') || sLower === 'go' || sLower.includes('grpc')) {
+        return {
+          why_it_matters: 'Go and gRPC provide high-concurrency, memory-efficient networking with binary serialization, ideal for high-throughput, low-latency microservices.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build a high-performance Go microservice with concurrent goroutines, Protobuf contract definitions, and gRPC streaming endpoints.',
+          suggested_proof: [
+            'Protocol Buffer (.proto) service definition files and generated Go stubs',
+            'Concurrent worker pool implementation using channels and sync primitives',
+            'Benchmark report with `go test -bench` comparing gRPC vs REST throughput',
+            'Unit tests with table-driven tests verifying edge cases',
+            'Docker container with minimal scratch/distroless multi-stage build'
+          ],
+          estimated_time: '6-8 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Core Investment' as const
+        };
+      }
+
+      // Specialized Blueprint: Playwright & E2E Testing
+      if (sLower.includes('playwright') || sLower.includes('cypress') || sLower.includes('e2e')) {
+        return {
+          why_it_matters: 'Automated end-to-end testing simulates real user journeys across multiple browsers, preventing critical user-facing regressions before production deployments.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Build an automated Playwright test suite covering authentication, core transactional flows, and visual regression snapshots in headless CI.',
+          suggested_proof: [
+            'playwright.config.ts configured for cross-browser matrix (Chromium, Firefox, WebKit)',
+            'Page Object Model (POM) architectural design for UI test stability',
+            'Trace viewer and video artifacts recorded on test failure in CI',
+            'Passing automated test report with visual diff comparisons',
+            'GitHub Actions workflow running E2E tests against pull requests'
+          ],
+          estimated_time: '3-5 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      // Specialized Blueprint: OAuth 2.0 & JWT Security
+      if (sLower.includes('oauth') || sLower.includes('jwt') || sLower.includes('auth') || sLower.includes('security')) {
+        return {
+          why_it_matters: 'Robust authentication and authorization protocols safeguard user data, enforce token expiration/rotation, and protect API endpoints from unauthorized access.',
+          evidence_found,
+          evidence_status,
+          recommended_action: 'Implement an OAuth 2.0 / JWT authorization service with refresh token rotation, role-based access control (RBAC), and cryptographic signature validation.',
+          suggested_proof: [
+            'JWT authentication middleware validating RS256/HS256 signatures and claims',
+            'Refresh token rotation logic with secure HttpOnly cookie handling',
+            'RBAC route protection guard verifying candidate role permissions',
+            'Automated security test suite verifying expired/tampered token rejection',
+            'GitHub repository documenting authentication flow and OpenAPI security schemes'
+          ],
+          estimated_time: '4-6 hours',
+          difficulty: 'Intermediate' as const,
+          roi_priority: 'Quick Win' as const
+        };
+      }
+
+      // Dynamic, professional blueprint for any arbitrary / specialized technical skill
+      const importance = isMandatory
+        ? `This is a core mandatory requirement in the job description, critical for delivering technical outcomes in ${category}.`
+        : `This is a preferred differentiator for this role, providing a competitive advantage for complex challenges in ${category}.`;
+
       return {
-        why_it_matters: 'Relational database proficiency is essential for data integrity, ACID compliance, complex relational queries, and safe schema migrations.',
+        why_it_matters: `Proficiency in ${skillName} demonstrates hands-on domain competency in ${category}. ${importance}`,
         evidence_found,
         evidence_status,
-        recommended_action: 'Design and implement a normalized PostgreSQL database schema with foreign keys, indexes, and automated migration scripts.',
+        recommended_action: `Build a standalone proof-of-concept project or extend an existing codebase to implement ${skillName}. Document the architectural rationale, write automated tests, and publish the repository.`,
         suggested_proof: [
-          'Database schema migration files (.sql or Prisma schema)',
-          'Query optimization proof using EXPLAIN ANALYZE on indexed queries',
-          'Connection pool setup and parameterized query repository pattern in code',
-          'Integration test suite verifying database transactions and rollback behavior',
-          'Entity Relationship Diagram (ERD) documented in project README'
-        ]
+          `${skillName} configuration, integration module, or core script in codebase`,
+          'README setup instructions detailing architecture, dependencies, and execution steps',
+          'GitHub repository with clear, sequential commit history demonstrating implementation',
+          `Automated test suite verifying ${skillName} behavior and error handling`,
+          'Execution log, benchmark report, or demo recording proving operational correctness'
+        ],
+        estimated_time: '4-6 hours',
+        difficulty: 'Intermediate' as const,
+        roi_priority: isMandatory ? ('Core Investment' as const) : ('Secondary' as const)
       };
-    }
-
-    if (sLower.includes('kubernetes') || sLower.includes('k8s')) {
-      return {
-        why_it_matters: 'Kubernetes orchestrates containerized services across clusters, managing automated self-healing, rolling deployments, and service discovery.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Deploy a containerized application to a local Kubernetes cluster (Minikube or Kind) with Deployment, Service, and ConfigMap manifests.',
-        suggested_proof: [
-          'k8s deployment.yaml specifying replica sets, CPU/memory limits, and restart policies',
-          'service.yaml and Ingress controller routing configuration',
-          'Liveness and readiness health probe definitions in deployment specs',
-          'Local verification instructions with kubectl commands documented in README',
-          'GitHub repository containing structured k8s manifests under /k8s directory'
-        ]
-      };
-    }
-
-    if (sLower.includes('redis') || sLower.includes('cache')) {
-      return {
-        why_it_matters: 'In-memory caching with Redis significantly improves response times, absorbs traffic spikes, and powers distributed session management.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Integrate Redis into an existing backend as a cache-aside layer with TTL invalidation, rate limiting, or session store.',
-        suggested_proof: [
-          'Redis client module with retry and exponential backoff logic',
-          'Cache-aside retrieval logic with explicit TTL and key naming conventions',
-          'Benchmark report or latency chart showing p99 reduction (cache hit vs miss)',
-          'Automated tests verifying cache invalidation upon record mutation',
-          'Local compose.yaml service definition for Redis'
-        ]
-      };
-    }
-
-    if (sLower.includes('aws') || sLower.includes('cloud')) {
-      return {
-        why_it_matters: 'Cloud infrastructure mastery is required to deploy, secure, and scale distributed architectures with enterprise reliability.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Deploy a containerized application to an AWS environment (such as ECS Fargate, App Runner, or EC2) with IAM least-privilege security.',
-        suggested_proof: [
-          'Infrastructure-as-Code template (Terraform, AWS CDK, or CloudFormation)',
-          'Cloud architecture diagram illustrating VPC, subnets, and security groups',
-          'GitHub Actions workflow automating deployment to AWS',
-          'IAM policy document adhering to least-privilege principles',
-          'Live staging URL or deployment execution verification log'
-        ]
-      };
-    }
-
-    if (sLower.includes('ci/cd') || sLower.includes('pipeline') || sLower.includes('github actions')) {
-      return {
-        why_it_matters: 'Automated CI/CD pipelines prevent regressions, standardize linting and testing, and ensure rapid, dependable production releases.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Build a multi-stage GitHub Actions workflow that automatically runs linting, unit tests, and security scans on every pull request.',
-        suggested_proof: [
-          '.github/workflows/ci.yml configuration file with build matrix',
-          'Passing build status badge displayed prominently in repository README',
-          'Automated test coverage report generated and published as CI artifact',
-          'Branch protection rule enforcement requiring passing status checks',
-          'Automated semantic release and changelog generation workflow'
-        ]
-      };
-    }
-
-    if (sLower.includes('typescript')) {
-      return {
-        why_it_matters: 'Strict TypeScript typing eliminates runtime type errors, provides self-documenting codebases, and enhances team refactoring velocity.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Build or migrate a project using strict TypeScript with custom interfaces, generic utility types, and zero `any` types.',
-        suggested_proof: [
-          'tsconfig.json configured with strict: true and noImplicitAny: true',
-          'Structured domain models and interface definitions in a dedicated types/ folder',
-          'Clean zero-error compilation build (tsc --noEmit)',
-          'Automated CI check enforcing type verification',
-          'GitHub repository demonstrating comprehensive typed endpoints'
-        ]
-      };
-    }
-
-    if (sLower.includes('graphql')) {
-      return {
-        why_it_matters: 'GraphQL enables client-driven data querying, avoiding over-fetching and consolidating multiple REST microservices into a single graph.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Build a GraphQL service with schema definition, query and mutation resolvers, and DataLoader to solve N+1 query performance issues.',
-        suggested_proof: [
-          'Schema definition file (.graphql) with strongly typed entities and mutations',
-          'DataLoader implementation batching relational database queries',
-          'Postman or Apollo Studio test collection export demonstrating queries',
-          'Automated integration tests validating schema queries and error handling',
-          'GitHub repository documenting GraphQL schema in README'
-        ]
-      };
-    }
-
-    if (sLower.includes('react') || sLower.includes('frontend')) {
-      return {
-        why_it_matters: 'Modern frontend development requires component modularity, state management predictability, and responsive, accessible UI rendering.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Build a responsive web application implementing custom hooks, optimistic UI state updates, and accessible component design.',
-        suggested_proof: [
-          'Component hierarchy code with custom reusable hooks',
-          'State management implementation (Zustand, Redux Toolkit, or Context)',
-          'Automated component unit tests using React Testing Library or Vitest',
-          'Lighthouse performance and accessibility score audit report (90+)',
-          'Live deployed demo URL (Vercel / Netlify / GitHub Pages)'
-        ]
-      };
-    }
-
-    if (sLower.includes('python')) {
-      return {
-        why_it_matters: 'Python proficiency is standard for AI/ML engineering, data pipelines, automation scripting, and asynchronous REST APIs.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Build a Python service using FastAPI or Flask, complete with Pydantic data validation, type hints, and pytest coverage.',
-        suggested_proof: [
-          'FastAPI/Flask application with Pydantic request/response validation',
-          'pytest test suite with fixtures and coverage reports',
-          'pyproject.toml or requirements.txt dependency specifications',
-          'Type annotations validated via mypy',
-          'GitHub repository documenting API endpoints and setup instructions'
-        ]
-      };
-    }
-
-    if (sLower.includes('jest') || sLower.includes('test')) {
-      return {
-        why_it_matters: 'Automated testing suites ensure regression resilience, validate edge cases, and give teams confidence during refactoring and rapid shipping.',
-        evidence_found,
-        evidence_status,
-        recommended_action: 'Implement a comprehensive test suite with unit, integration, and mock tests targeting high branch coverage on core logic.',
-        suggested_proof: [
-          'Jest / Vitest configuration with test scripts in package.json',
-          'Test suite covering happy paths, edge cases, and error handlers',
-          'Mocking of external dependencies and database clients',
-          'Code coverage report artifact demonstrating 80%+ line coverage',
-          'GitHub Actions workflow executing tests on pull requests'
-        ]
-      };
-    }
-
-    // Dynamic, professional blueprint for any arbitrary / specialized technical skill
-    const importance = isMandatory
-      ? `This is a core mandatory requirement in the job description, critical for delivering technical outcomes in ${category}.`
-      : `This is a preferred differentiator for this role, providing a competitive advantage for complex challenges in ${category}.`;
+    })();
 
     return {
-      why_it_matters: `Proficiency in ${skillName} demonstrates hands-on domain competency in ${category}. ${importance}`,
-      evidence_found,
-      evidence_status,
-      recommended_action: `Build a standalone proof-of-concept project or extend an existing codebase to implement ${skillName}. Document the architectural rationale, write automated tests, and publish the repository.`,
-      suggested_proof: [
-        `${skillName} configuration, integration module, or core script in codebase`,
-        'README setup instructions detailing architecture, dependencies, and execution steps',
-        'GitHub repository with clear, sequential commit history demonstrating implementation',
-        `Automated test suite verifying ${skillName} behavior and error handling`,
-        'Execution log, benchmark report, or demo recording proving operational correctness'
-      ]
+      ...basePlan,
+      tasks: basePlan.tasks || this.getFallbackTasks(skillName, category),
+      evidence_artifacts: basePlan.evidence_artifacts || this.getFallbackArtifacts(skillName)
     };
-  })();
-
-  return {
-    ...basePlan,
-    tasks: basePlan.tasks || this.getFallbackTasks(skillName, category),
-    evidence_artifacts: basePlan.evidence_artifacts || this.getFallbackArtifacts(skillName)
-  };
-}
+  }
 
   /**
    * Practical Skill Action Plan Generator
@@ -879,6 +1263,83 @@ ${resumeStr ? `Candidate Existing Background Context:\n${resumeStr.slice(0, 800)
       ];
     }
 
+    if (sLower.includes('rag') || sLower.includes('vector') || sLower.includes('pinecone') || sLower.includes('langchain') || sLower.includes('embedding')) {
+      return [
+        { step: 1, title: 'Understand RAG Architecture', description: 'Study document chunking strategies, vector embeddings, and semantic similarity search.' },
+        { step: 2, title: 'Configure Vector Database', description: 'Set up Pinecone, pgvector, or Qdrant with cosine similarity index.' },
+        { step: 3, title: 'Build Ingestion Pipeline', description: 'Implement recursive chunking and generate vector embeddings using OpenAI or open weights.' },
+        { step: 4, title: 'Implement Retrieval & Prompt Assembly', description: 'Query vector store for top-k chunks and inject context with citations into LLM prompt.' },
+        { step: 5, title: 'Evaluate Latency & Hallucinations', description: 'Benchmark retrieval latency (target <100ms) and evaluate answer factual accuracy.' },
+        { step: 6, title: 'Document Architecture in README', description: 'Document embedding models, chunk size, vector dimensions, and setup steps in README.' }
+      ];
+    }
+
+    if (sLower.includes('rabbitmq')) {
+      return [
+        { step: 1, title: 'Learn AMQP Core Concepts', description: 'Study exchanges (direct, topic, fanout), queues, bindings, and delivery acknowledgments.' },
+        { step: 2, title: 'Launch Local RabbitMQ Broker', description: 'Run RabbitMQ with Management Plugin locally via compose.yaml.' },
+        { step: 3, title: 'Implement AMQP Producer', description: 'Build a message publisher routing messages to exchanges with confirmation channels.' },
+        { step: 4, title: 'Implement AMQP Consumer', description: 'Build worker consumers handling messages with manual ack and nack retry logic.' },
+        { step: 5, title: 'Configure Dead-Letter Exchange (DLX)', description: 'Set up dead-letter exchange and queue for rejected or unprocessable messages.' },
+        { step: 6, title: 'Document Setup in README', description: 'Document exchange topology, queue bindings, and message routing steps in README.' }
+      ];
+    }
+
+    if (sLower.includes('kafka') || sLower.includes('event') || sLower.includes('streaming')) {
+      return [
+        { step: 1, title: 'Learn Event-Driven Architecture', description: 'Study topics, partitions, consumer groups, offsets, and message ordering guarantees.' },
+        { step: 2, title: 'Spin up Local Broker', description: 'Run Apache Kafka and Zookeeper or KRaft locally via Docker compose.yaml.' },
+        { step: 3, title: 'Implement Producer Service', description: 'Build an event publisher with retry logic, idempotency, and partition key hashing.' },
+        { step: 4, title: 'Implement Consumer Service', description: 'Build a consumer worker with consumer group rebalance handling and commit strategies.' },
+        { step: 5, title: 'Add Dead-Letter Queue (DLQ)', description: 'Handle unprocessable/poison messages with automated dead-letter routing.' },
+        { step: 6, title: 'Document Data Flow in README', description: 'Document topic schemas, producer/consumer flow, and benchmark throughput in README.' }
+      ];
+    }
+
+    if (sLower.includes('terraform') || sLower.includes('iac') || sLower.includes('infrastructure as code')) {
+      return [
+        { step: 1, title: 'Learn Terraform Primitives', description: 'Study providers, resources, variables, outputs, and Terraform state management.' },
+        { step: 2, title: 'Structure Modular Code', description: 'Create root and reusable child modules for networking, compute, and databases.' },
+        { step: 3, title: 'Configure Remote State Locking', description: 'Set up remote S3/GCS backend with DynamoDB state locking to prevent race conditions.' },
+        { step: 4, title: 'Execute Plan & Apply', description: 'Run terraform init, validate, and plan to preview infrastructure changes safely.' },
+        { step: 5, title: 'Automate Security Linting', description: 'Add tflint and tfsec/checkov scans to detect misconfigurations and security vulnerabilities.' },
+        { step: 6, title: 'Document Cloud Architecture in README', description: 'Document module parameters, variables, and terraform apply steps in README.' }
+      ];
+    }
+
+    if (sLower.includes('golang') || sLower.includes('go ') || sLower === 'go' || sLower.includes('grpc')) {
+      return [
+        { step: 1, title: 'Learn Go Concurrency & Primitives', description: 'Master goroutines, channels, mutexes, interfaces, and struct pointer semantics.' },
+        { step: 2, title: 'Define Protocol Buffers', description: 'Author .proto service definitions with request/response messages and streaming RPCs.' },
+        { step: 3, title: 'Generate & Implement gRPC Server', description: 'Generate Go stubs using protoc and implement high-performance server handlers.' },
+        { step: 4, title: 'Add Concurrency & Worker Pools', description: 'Implement non-blocking worker pools using worker channels and WaitGroups.' },
+        { step: 5, title: 'Benchmark & Profile Performance', description: 'Write table-driven unit tests and benchmark throughput with `go test -bench`.' },
+        { step: 6, title: 'Build Minimal Docker Image', description: 'Package Go binary into a scratch or distroless container for sub-25MB deployment.' }
+      ];
+    }
+
+    if (sLower.includes('playwright') || sLower.includes('cypress') || sLower.includes('e2e')) {
+      return [
+        { step: 1, title: 'Learn E2E Automation Concepts', description: 'Study browser automation, selector strategies, page object models, and test isolation.' },
+        { step: 2, title: 'Set up Playwright / Cypress', description: 'Initialize test framework with cross-browser matrix (Chromium, Firefox, WebKit).' },
+        { step: 3, title: 'Implement Page Object Models', description: 'Encapsulate page interactions and locators into clean, maintainable POM classes.' },
+        { step: 4, title: 'Cover Critical User Journeys', description: 'Write end-to-end tests covering login, core workflows, and error edge cases.' },
+        { step: 5, title: 'Configure Headless CI Runs', description: 'Integrate test execution in GitHub Actions with artifact trace recording on failure.' },
+        { step: 6, title: 'Document Test Execution in README', description: 'Document test running commands, visual snapshot updates, and debug workflows.' }
+      ];
+    }
+
+    if (sLower.includes('oauth') || sLower.includes('jwt') || sLower.includes('auth') || sLower.includes('security')) {
+      return [
+        { step: 1, title: 'Learn OAuth 2.0 & Token Standards', description: 'Study authorization code flow, PKCE, JWT claims, signature validation, and scopes.' },
+        { step: 2, title: 'Implement Token Issuance & Verification', description: 'Build JWT signing with RS256/HS256 and expiration claims verification.' },
+        { step: 3, title: 'Implement Refresh Token Rotation', description: 'Store refresh tokens in secure HttpOnly cookies with automatic token revocation on reuse.' },
+        { step: 4, title: 'Build Role-Based Access Guards (RBAC)', description: 'Create middleware verifying required user roles and permissions per endpoint.' },
+        { step: 5, title: 'Write Security & Expiration Tests', description: 'Write automated integration tests asserting rejection of expired or forged tokens.' },
+        { step: 6, title: 'Document Auth Architecture in README', description: 'Document login flow, token lifecycles, and security best practices in project README.' }
+      ];
+    }
+
     // Generic practical tasks for arbitrary technology
     return [
       { step: 1, title: `Learn ${skill} Core Concepts`, description: `Study official documentation, core paradigms, and CLI / API usage for ${skill}.` },
@@ -946,6 +1407,76 @@ ${resumeStr ? `Candidate Existing Background Context:\n${resumeStr.slice(0, 800)
       ];
     }
 
+    if (sLower.includes('rag') || sLower.includes('vector') || sLower.includes('pinecone') || sLower.includes('langchain') || sLower.includes('embedding')) {
+      return [
+        'Vector indexing and embedding ingestion script',
+        'Cosine similarity benchmark retrieval log',
+        'Hallucination and precision evaluation suite',
+        'Grounded API endpoint with source citations',
+        'GitHub repository'
+      ];
+    }
+
+    if (sLower.includes('rabbitmq')) {
+      return [
+        'RabbitMQ producer and consumer modules with amqplib',
+        'compose.yaml running RabbitMQ with Management UI',
+        'Dead-letter exchange (DLX) and queue routing configuration',
+        'Integration test verifying message ack/nack semantics',
+        'GitHub repository'
+      ];
+    }
+
+    if (sLower.includes('kafka') || sLower.includes('event') || sLower.includes('streaming')) {
+      return [
+        'Kafka producer and consumer service modules',
+        'compose.yaml running Kafka broker cluster',
+        'Dead-letter queue (DLQ) handler code',
+        'Throughput benchmark report',
+        'GitHub repository'
+      ];
+    }
+
+    if (sLower.includes('terraform') || sLower.includes('iac') || sLower.includes('infrastructure as code')) {
+      return [
+        'Terraform modular configuration files (.tf)',
+        'Remote state backend and DynamoDB lock config',
+        'terraform plan verification output log',
+        'tflint / tfsec security scan report',
+        'GitHub repository'
+      ];
+    }
+
+    if (sLower.includes('golang') || sLower.includes('go ') || sLower === 'go' || sLower.includes('grpc')) {
+      return [
+        'Protocol Buffer (.proto) service definitions',
+        'Concurrent Go worker pool module',
+        'go test -bench performance report',
+        'Minimal multi-stage Dockerfile',
+        'GitHub repository'
+      ];
+    }
+
+    if (sLower.includes('playwright') || sLower.includes('cypress') || sLower.includes('e2e')) {
+      return [
+        'playwright.config.ts multi-browser configuration',
+        'Page Object Model (POM) test architecture',
+        'Automated HTML test report with trace recordings',
+        'GitHub Actions E2E test workflow',
+        'GitHub repository'
+      ];
+    }
+
+    if (sLower.includes('oauth') || sLower.includes('jwt') || sLower.includes('auth') || sLower.includes('security')) {
+      return [
+        'JWT signing and RS256 verification middleware',
+        'Refresh token rotation module with HttpOnly cookies',
+        'RBAC authorization route guard',
+        'Security test suite asserting token expiration',
+        'GitHub repository'
+      ];
+    }
+
     return [
       `${skill} configuration or implementation file`,
       'README setup instructions',
@@ -964,18 +1495,42 @@ ${resumeStr ? `Candidate Existing Background Context:\n${resumeStr.slice(0, 800)
     _jobDescription?: string,
     _resumeContext?: string
   ): SkillActionPlan {
-    const tasks = this.getFallbackTasks(skill, category);
-    const artifacts = this.getFallbackArtifacts(skill);
+    const readiness = this.generateReadinessPlan(skill, category, false, _jobDescription, _resumeContext);
+    const tasks = readiness.tasks && readiness.tasks.length > 0 ? readiness.tasks : this.getFallbackTasks(skill, category);
+    const artifacts = readiness.evidence_artifacts && readiness.evidence_artifacts.length > 0
+      ? readiness.evidence_artifacts
+      : (readiness.suggested_proof && readiness.suggested_proof.length > 0 ? readiness.suggested_proof : this.getFallbackArtifacts(skill));
+    const sLower = skill.toLowerCase();
+
+    let estimated_time = readiness.estimated_time || '4-6 hours';
+    let difficulty: 'Beginner' | 'Intermediate' | 'Advanced' = readiness.difficulty || 'Intermediate';
+    let roi_priority: 'Quick Win' | 'Core Investment' | 'Secondary' = readiness.roi_priority || 'Core Investment';
+
+    if (sLower.includes('ci/cd') || sLower.includes('pipeline') || sLower.includes('github actions')) {
+      estimated_time = '2-4 hours';
+      difficulty = 'Beginner';
+      roi_priority = 'Quick Win';
+    } else if (sLower.includes('redis') || sLower.includes('cache') || sLower.includes('docker') || sLower.includes('container') || sLower.includes('playwright') || sLower.includes('oauth')) {
+      estimated_time = '3-5 hours';
+      difficulty = 'Intermediate';
+      roi_priority = 'Quick Win';
+    } else if (sLower.includes('kubernetes') || sLower.includes('k8s') || sLower.includes('kafka') || sLower.includes('rag') || sLower.includes('vector')) {
+      estimated_time = '8-12 hours';
+      difficulty = 'Advanced';
+      roi_priority = 'Core Investment';
+    }
 
     return {
       skill,
       category,
-      why_it_matters: `Understanding ${skill} is critical for role responsibilities in ${category}.`,
-      recommended_action: `Build and verify a practical project implementing ${skill} to generate verifiable evidence.`,
+      why_it_matters: readiness.why_it_matters || `Understanding ${skill} is critical for role responsibilities in ${category}.`,
+      recommended_action: readiness.recommended_action || `Build and verify a practical project implementing ${skill} to generate verifiable evidence.`,
       tasks,
       evidence_artifacts: artifacts,
-      estimated_time: '4-6 hours',
-      difficulty: 'Intermediate',
+      estimated_time,
+      difficulty,
+      projected_score_delta: readiness.projected_score_delta || 8,
+      roi_priority,
       honest_guideline: 'Complete all practical tasks and verify evidence artifacts before honestly adding this skill to your resume. Progress is self-reported candidate tracking and does not represent an external certification.'
     };
   }

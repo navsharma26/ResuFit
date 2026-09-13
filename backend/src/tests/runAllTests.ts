@@ -6,6 +6,7 @@ const tests = [
   'src/tests/gapAnalysis.test.ts',
   'src/tests/careerReadiness.test.ts',
   'src/tests/practicalActionPlan.test.ts',
+  'src/tests/expandedGapAnalysis.test.ts',
   'src/tests/coverLetter.test.ts',
   'src/tests/recalculateScore.test.ts',
   'src/tests/resumeVersions.test.ts'

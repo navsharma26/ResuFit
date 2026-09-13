@@ -24,7 +24,11 @@ import {
   ExternalLink,
   CheckCircle2,
   Sparkles,
-  Lightbulb
+  Lightbulb,
+  Download,
+  FileText,
+  TrendingUp,
+  Target
 } from 'lucide-react';
 import {
   GapAnalysisResult,
@@ -39,7 +43,7 @@ interface GapAnalysisMatrixProps {
   className?: string;
 }
 
-type TabType = 'all' | 'matched' | 'missing' | 'nice_to_have' | 'readiness';
+type TabType = 'all' | 'matched' | 'missing' | 'nice_to_have' | 'readiness' | 'quick_wins';
 type ViewMode = 'checklist' | 'matrix';
 
 interface UnifiedItem {
@@ -55,6 +59,10 @@ interface UnifiedItem {
   confidence?: number;
   chunkIndex?: number;
   readinessPlan?: CareerReadinessPlan;
+  projectedScoreDelta?: number;
+  roiPriority?: 'Quick Win' | 'Core Investment' | 'Secondary';
+  evidenceStrength?: 'high' | 'moderate' | 'surface';
+  quantifiedMetrics?: string[];
 }
 
 export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, className = '' }) => {
@@ -63,6 +71,8 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [copied, setCopied] = useState(false);
+  const [showMarkdownModal, setShowMarkdownModal] = useState(false);
+  const [markdownCopied, setMarkdownCopied] = useState(false);
 
   // Interactive checkbox state for suggested proof deliverables
   const [completedProofs, setCompletedProofs] = useState<Record<string, boolean>>({});
@@ -102,7 +112,9 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
         isMandatory: true,
         evidence: s.resume_evidence,
         confidence: s.confidence,
-        chunkIndex: s.chunk_index
+        chunkIndex: s.chunk_index,
+        evidenceStrength: s.evidence_strength,
+        quantifiedMetrics: s.quantified_metrics
       });
     });
 
@@ -116,7 +128,9 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
         isMandatory: true,
         impactOrBonus: s.impact,
         recommendation: s.recommendation,
-        readinessPlan: s.readiness_plan
+        readinessPlan: s.readiness_plan,
+        projectedScoreDelta: s.projected_score_delta || s.readiness_plan?.projected_score_delta,
+        roiPriority: s.roi_priority || s.readiness_plan?.roi_priority
       });
     });
 
@@ -130,7 +144,11 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
         isMandatory: false,
         impactOrBonus: s.bonus_value,
         evidence: s.resume_evidence,
-        readinessPlan: s.readiness_plan
+        readinessPlan: s.readiness_plan,
+        projectedScoreDelta: s.projected_score_delta || s.readiness_plan?.projected_score_delta,
+        roiPriority: s.roi_priority || s.readiness_plan?.roi_priority,
+        evidenceStrength: s.evidence_strength,
+        quantifiedMetrics: s.quantified_metrics
       });
     });
 
@@ -142,6 +160,14 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
     return unifiedItems.filter(item => item.status === 'missing' && item.readinessPlan).length;
   }, [unifiedItems]);
 
+  // Count items identified as Quick Wins
+  const quickWinsCount = useMemo(() => {
+    return unifiedItems.filter(item => 
+      item.roiPriority === 'Quick Win' || 
+      item.readinessPlan?.roi_priority === 'Quick Win'
+    ).length;
+  }, [unifiedItems]);
+
   // Filtered items based on active tab, category, and search query
   const filteredItems = useMemo(() => {
     return unifiedItems.filter(item => {
@@ -150,6 +176,7 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
       if (activeTab === 'missing' && item.type !== 'missing_mandatory') return false;
       if (activeTab === 'nice_to_have' && item.type !== 'nice_to_have') return false;
       if (activeTab === 'readiness' && (!item.readinessPlan || item.status !== 'missing')) return false;
+      if (activeTab === 'quick_wins' && item.roiPriority !== 'Quick Win' && item.readinessPlan?.roi_priority !== 'Quick Win') return false;
 
       // Category filter
       if (selectedCategory !== 'all' && item.category !== selectedCategory) return false;
@@ -163,7 +190,8 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
         const matchesRec = item.recommendation?.toLowerCase().includes(query);
         const matchesWhy = item.readinessPlan?.why_it_matters.toLowerCase().includes(query);
         const matchesProof = item.readinessPlan?.suggested_proof.some(p => p.toLowerCase().includes(query));
-        if (!matchesName && !matchesCat && !matchesEvidence && !matchesRec && !matchesWhy && !matchesProof) return false;
+        const matchesMetric = item.quantifiedMetrics?.some(m => m.toLowerCase().includes(query));
+        if (!matchesName && !matchesCat && !matchesEvidence && !matchesRec && !matchesWhy && !matchesProof && !matchesMetric) return false;
       }
 
       return true;
@@ -212,6 +240,91 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
     } finally {
       setGeneratingPlans(prev => ({ ...prev, [item.id]: false }));
     }
+  };
+
+  const generateMarkdownRoadmap = () => {
+    let md = `# ResuFit — Career Readiness & Skill Gap Action Plan\n\n`;
+    md += `**Target Fit Score:** ${data.match_score}%\n`;
+    md += `**Summary:** ${data.summary}\n`;
+    md += `**Mandatory Coverage:** ${data.stats?.matched_mandatory || 0} of ${data.stats?.total_mandatory || 0} (${data.stats?.mandatory_coverage_pct || 0}%)\n\n`;
+
+    md += `## 1. Verified Core Competencies (${data.matched_skills.length})\n`;
+    data.matched_skills.forEach(s => {
+      const strength = s.evidence_strength ? ` [Depth: ${s.evidence_strength.toUpperCase()}]` : '';
+      const metricsText = s.quantified_metrics && s.quantified_metrics.length > 0 ? ` [Key Metrics: ${s.quantified_metrics.join(', ')}]` : '';
+      md += `- [x] **${s.skill}** (${s.category})${strength}${metricsText}\n`;
+      if (s.resume_evidence) {
+        md += `  > Evidence: "${s.resume_evidence.trim()}"\n`;
+      }
+    });
+
+    md += `\n## 2. Priority Remediation Roadmaps (Missing Mandatory Requirements)\n`;
+    data.missing_mandatory_skills.forEach(s => {
+      const delta = s.projected_score_delta || s.readiness_plan?.projected_score_delta;
+      const deltaText = delta ? ` [Projected Score Delta: +${delta} pts]` : '';
+      const roi = s.roi_priority || s.readiness_plan?.roi_priority;
+      const roiText = roi ? ` [ROI: ${roi}]` : '';
+      md += `### 🎯 ${s.skill} (${s.category})${deltaText}${roiText}\n`;
+      if (s.readiness_plan) {
+        md += `**Why It Matters:** ${s.readiness_plan.why_it_matters}\n\n`;
+        md += `**Recommended Action:** ${s.readiness_plan.recommended_action}\n\n`;
+        if (s.readiness_plan.tasks && s.readiness_plan.tasks.length > 0) {
+          md += `**Step-by-Step Practical Tasks:**\n`;
+          s.readiness_plan.tasks.forEach(t => {
+            md += `- [ ] Step ${t.step}: **${t.title}** — ${t.description}\n`;
+          });
+          md += `\n`;
+        }
+        if (s.readiness_plan.suggested_proof && s.readiness_plan.suggested_proof.length > 0) {
+          md += `**Verifiable Proof Deliverables:**\n`;
+          s.readiness_plan.suggested_proof.forEach(p => {
+            md += `- [ ] Proof Artifact: ${p}\n`;
+          });
+          md += `\n`;
+        }
+      }
+    });
+
+    if (data.nice_to_haves.some(n => n.status === 'missing')) {
+      md += `## 3. Nice-to-Have Differentiators\n`;
+      data.nice_to_haves.filter(n => n.status === 'missing').forEach(n => {
+        const delta = n.projected_score_delta || n.readiness_plan?.projected_score_delta;
+        const deltaText = delta ? ` [Projected Score Delta: +${delta} pts]` : '';
+        md += `### 💡 ${n.skill} (${n.category})${deltaText}\n`;
+        if (n.readiness_plan) {
+          md += `**Recommended Action:** ${n.readiness_plan.recommended_action}\n\n`;
+          if (n.readiness_plan.suggested_proof) {
+            n.readiness_plan.suggested_proof.forEach(p => {
+              md += `- [ ] Proof Artifact: ${p}\n`;
+            });
+            md += `\n`;
+          }
+        }
+      });
+    }
+
+    md += `\n---\n*Generated by ResuFit AI Career Readiness Engine — Follow honest progression: Learn → Practice → Build → Document → Verify → Add.*\n`;
+    return md;
+  };
+
+  const handleDownloadMarkdown = () => {
+    const mdContent = generateMarkdownRoadmap();
+    const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `ResuFit-Career-Readiness-Plan-${new Date().toISOString().slice(0, 10)}.md`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCopyMarkdown = () => {
+    const mdContent = generateMarkdownRoadmap();
+    navigator.clipboard.writeText(mdContent);
+    setMarkdownCopied(true);
+    setTimeout(() => setMarkdownCopied(false), 2000);
   };
 
   const handleCopyReport = () => {
@@ -280,6 +393,16 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                 </>
               )}
             </button>
+
+            <button
+              onClick={() => setShowMarkdownModal(true)}
+              className="export-roadmap-btn"
+              id="export-markdown-roadmap-btn"
+              title="Preview and export full Career Readiness Roadmap to Markdown"
+            >
+              <FileText className="w-4 h-4 text-indigo-400" />
+              <span>Export Action Roadmap (.md)</span>
+            </button>
           </div>
         </div>
 
@@ -332,6 +455,22 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                 Career Readiness
                 <span className="tab-count" style={{ background: 'rgba(99, 102, 241, 0.25)', color: '#a5b4fc' }}>
                   {readinessCount}
+                </span>
+              </button>
+              <button
+                className={`matrix-tab quick-wins-tab ${activeTab === 'quick_wins' ? 'active' : ''}`}
+                onClick={() => setActiveTab('quick_wins')}
+                id="tab-quick-wins"
+                style={{
+                  color: activeTab === 'quick_wins' ? '#ffffff' : '#34d399',
+                  borderColor: activeTab === 'quick_wins' ? '#10b981' : 'transparent',
+                  background: activeTab === 'quick_wins' ? 'rgba(16, 185, 129, 0.15)' : 'transparent'
+                }}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Quick Wins
+                <span className="tab-count" style={{ background: 'rgba(16, 185, 129, 0.25)', color: '#6ee7b7' }}>
+                  {quickWinsCount}
                 </span>
               </button>
             </div>
@@ -437,6 +576,11 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                             {item.type === 'nice_to_have' && (
                               <span className="nice-status-badge matched">BONUS EARNED</span>
                             )}
+                            {item.evidenceStrength && (
+                              <span className={`evidence-depth-chip depth-${item.evidenceStrength}`} title={`Evidence depth classified as ${item.evidenceStrength}`}>
+                                {item.evidenceStrength === 'high' ? 'High Depth' : item.evidenceStrength === 'moderate' ? 'Moderate' : 'Surface Mention'}
+                              </span>
+                            )}
                           </div>
 
                           {item.evidence && (
@@ -444,6 +588,17 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                               <span className="evidence-label">Resume Proof:</span> &ldquo;
                               {item.evidence}&rdquo;
                             </p>
+                          )}
+
+                          {item.quantifiedMetrics && item.quantifiedMetrics.length > 0 && (
+                            <div className="metrics-chip-group">
+                              <span className="text-[11px] text-neutral-400 font-medium">Verified Metrics:</span>
+                              {item.quantifiedMetrics.map((m, idx) => (
+                                <span key={idx} className="metric-chip" title="Quantified metric detected in resume proof">
+                                  {m}
+                                </span>
+                              ))}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -475,12 +630,47 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                     <div className="checklist-missing-card-inner">
                       {/* Flow 1: Missing Requirement Header */}
                       <div className="missing-card-header">
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-center gap-2.5 flex-wrap">
                           <div className="icon-box-missing">
                             <XCircle className="w-5 h-5 text-rose-500" />
                           </div>
                           <span className="skill-name-prominent">{item.name}</span>
                           <span className="category-pill">{item.category}</span>
+
+                          {/* Projected ATS Score Delta */}
+                          {(item.projectedScoreDelta || item.readinessPlan?.projected_score_delta) && (
+                            <span
+                              className="score-delta-chip"
+                              title="Estimated ATS match score points gained by adding verifiable proof for this requirement"
+                            >
+                              <TrendingUp className="w-3.5 h-3.5" />
+                              +{item.projectedScoreDelta || item.readinessPlan?.projected_score_delta} pts
+                            </span>
+                          )}
+
+                          {/* ROI Priority */}
+                          {(item.roiPriority || item.readinessPlan?.roi_priority) && (
+                            <span
+                              className={`roi-priority-chip ${(item.roiPriority || item.readinessPlan?.roi_priority || '').toLowerCase().replace(' ', '-')}`}
+                              title={
+                                (item.roiPriority || item.readinessPlan?.roi_priority) === 'Quick Win'
+                                  ? 'High ROI: Low-to-moderate effort with direct mandatory/bonus impact'
+                                  : 'Core Investment: Foundational capability requiring deliberate practice'
+                              }
+                            >
+                              {(item.roiPriority || item.readinessPlan?.roi_priority) === 'Quick Win' ? (
+                                <>
+                                  <Sparkles className="w-3 h-3 text-emerald-400" />
+                                  <span>Quick Win</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Target className="w-3 h-3 text-indigo-400" />
+                                  <span>{item.roiPriority || item.readinessPlan?.roi_priority}</span>
+                                </>
+                              )}
+                            </span>
+                          )}
                         </div>
                         <span className="missing-status-tag">
                           {item.isMandatory ? 'Missing' : 'Optional Boost'}
@@ -667,8 +857,18 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                   {filteredItems.map(item => (
                     <tr key={item.id} className={`matrix-row ${item.type}`}>
                       <td className="font-semibold text-white">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span>{item.name}</span>
+                          {item.projectedScoreDelta && (
+                            <span className="score-delta-chip text-[10px] py-0 px-1.5" title="Projected ATS Score Delta">
+                              +{item.projectedScoreDelta} pts
+                            </span>
+                          )}
+                          {item.evidenceStrength && (
+                            <span className={`evidence-depth-chip depth-${item.evidenceStrength} text-[10px] py-0 px-1.5`}>
+                              {item.evidenceStrength}
+                            </span>
+                          )}
                           {item.readinessPlan && (
                             <span className="table-readiness-dot" title="Has Career Readiness Plan" />
                           )}
@@ -990,6 +1190,68 @@ export const GapAnalysisMatrix: React.FC<GapAnalysisMatrixProps> = ({ data, clas
                 className="btn-covercraft-white text-xs px-4 py-2"
               >
                 Close Blueprint
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          CAREER READINESS ACTION ROADMAP (MARKDOWN EXPORT MODAL)
+          ==================================================================== */}
+      {showMarkdownModal && (
+        <div className="roadmap-modal-backdrop" onClick={() => setShowMarkdownModal(false)}>
+          <div className="roadmap-modal-card" onClick={e => e.stopPropagation()}>
+            <div className="roadmap-modal-header">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Career Readiness Action Roadmap</h3>
+                  <span className="text-xs text-neutral-400">Exportable Markdown document with remediation tasks & proof deliverables</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMarkdownModal(false)}
+                className="modal-close-btn"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="roadmap-modal-body">
+              <pre className="roadmap-markdown-pre">
+                {generateMarkdownRoadmap()}
+              </pre>
+            </div>
+
+            <div className="roadmap-modal-footer">
+              <button
+                onClick={handleCopyMarkdown}
+                className="btn-covercraft-white text-xs px-3.5 py-2 flex items-center gap-1.5"
+                id="copy-markdown-roadmap-btn"
+              >
+                {markdownCopied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Copied Markdown!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy to Clipboard</span>
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleDownloadMarkdown}
+                className="btn-generate-action-plan text-xs px-4 py-2 flex items-center gap-1.5"
+                id="download-markdown-roadmap-btn"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download .md File</span>
               </button>
             </div>
           </div>
